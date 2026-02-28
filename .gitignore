@@ -1,0 +1,21 @@
+# Go
+bin/
+dist/
+*.test
+*.out
+coverage/
+
+# Nix
+result
+
+# Logs and temp
+*.log
+*.tmp
+
+# Local secrets and generated configs
+*.secret.*
+*.token.*
+config.yaml
+
+# Node (if used for docs tooling)
+node_modules/

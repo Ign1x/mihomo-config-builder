@@ -1,0 +1,20 @@
+proxies:
+  - name: DEMO-US
+    type: ss
+    server: us.demo.example
+    port: 443
+    cipher: aes-128-gcm
+    password: demo-password
+proxy-groups:
+  - name: PROXY
+    type: select
+    proxies:
+      - DEMO-US
+      - DIRECT
+rules:
+  - MATCH,PROXY
+dns:
+  enable: true
+  enhanced-mode: fake-ip
+  fake-ip-filter:
+    - +.lan

@@ -1,0 +1,26 @@
+subscriptions:
+  - file: ./subscription.yaml
+template: ./template.yaml
+overrides:
+  patches:
+    - type: strategy
+      target: rules
+      action: prepend
+      value: "DOMAIN-SUFFIX,example.cn,DIRECT"
+output:
+  deterministic: true
+  sortKeys: true
+  keepComments: false
+fetch:
+  timeoutSeconds: 10
+  retries: 1
+  concurrency: 2
+  ignoreFailed: false
+ruleTemplates:
+  - cn-direct
+  - steam-direct-enhanced
+hooks:
+  js:
+    files:
+      - ./hook.js
+    timeoutMs: 1500

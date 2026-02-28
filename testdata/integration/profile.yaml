@@ -1,0 +1,27 @@
+subscriptions:
+  - file: ./subscription.yaml
+overrides:
+  patches:
+    - type: yaml-merge
+      patch:
+        proxy-groups:
+          - name: PROXY
+            type: select
+            proxies:
+              - HK-01
+              - DIRECT
+        rules:
+          - DOMAIN-SUFFIX,steamcontent.com,DIRECT
+          - MATCH,PROXY
+output:
+  deterministic: true
+  sortKeys: true
+  keepComments: false
+fetch:
+  timeoutSeconds: 10
+  retries: 1
+  concurrency: 2
+  ignoreFailed: false
+policy:
+  gamePlatformDirect:
+    - steam

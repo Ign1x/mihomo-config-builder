@@ -1,0 +1,49 @@
+dns:
+  enable: true
+  enhanced-mode: fake-ip
+  fake-ip-filter:
+    - +.lan
+    - +.steampowered.com
+    - +.steamcommunity.com
+    - +.steamcontent.com
+    - +.steamstatic.com
+    - +.steamserver.net
+log-level: debug
+mixed-port: 7890
+mode: rule
+proxies:
+  - cipher: aes-128-gcm
+    name: BASE-LOCAL
+    password: pass
+    port: 443
+    server: base.example.com
+    type: ss
+  - cipher: aes-128-gcm
+    name: HK-01
+    password: pass
+    port: 443
+    server: hk.example.com
+    type: ss
+proxy-groups:
+  - name: BASE
+    proxies:
+      - BASE-LOCAL
+      - DIRECT
+    type: select
+  - name: PROXY
+    proxies:
+      - HK-01
+      - DIRECT
+    type: select
+rules:
+  - DOMAIN-SUFFIX,steampowered.com,DIRECT
+  - DOMAIN-SUFFIX,steamcommunity.com,DIRECT
+  - DOMAIN-SUFFIX,steamcontent.com,DIRECT
+  - DOMAIN-SUFFIX,steamstatic.com,DIRECT
+  - DOMAIN-SUFFIX,steamserver.net,DIRECT
+  - GEOSITE,cn,DIRECT
+  - GEOIP,CN,DIRECT
+  - DOMAIN-SUFFIX,cn,DIRECT
+  - DOMAIN-SUFFIX,example.cn,DIRECT
+  - MATCH,BASE
+  - MATCH,PROXY

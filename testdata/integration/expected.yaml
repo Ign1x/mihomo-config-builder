@@ -1,0 +1,30 @@
+dns:
+  enable: true
+  enhanced-mode: fake-ip
+  fake-ip-filter:
+    - +.lan
+    - +.steampowered.com
+    - +.steamcommunity.com
+    - +.steamstatic.com
+    - +.steamcontent.com
+    - +.steamserver.net
+proxies:
+  - cipher: aes-128-gcm
+    name: HK-01
+    password: pass
+    port: 443
+    server: hk.example.com
+    type: ss
+proxy-groups:
+  - name: PROXY
+    proxies:
+      - HK-01
+      - DIRECT
+    type: select
+rules:
+  - DOMAIN-SUFFIX,steampowered.com,DIRECT
+  - DOMAIN-SUFFIX,steamcommunity.com,DIRECT
+  - DOMAIN-SUFFIX,steamstatic.com,DIRECT
+  - DOMAIN-SUFFIX,steamserver.net,DIRECT
+  - DOMAIN-SUFFIX,steamcontent.com,DIRECT
+  - MATCH,PROXY

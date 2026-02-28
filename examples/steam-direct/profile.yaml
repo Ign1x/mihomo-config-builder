@@ -1,0 +1,28 @@
+subscriptions:
+  - file: ./subscription.yaml
+overrides:
+  patches:
+    - type: strategy
+      target: rules
+      action: append
+      value: "DOMAIN-SUFFIX,steamcontent.com,DIRECT"
+output:
+  deterministic: true
+  sortKeys: true
+  keepComments: false
+fetch:
+  timeoutSeconds: 12
+  retries: 1
+  concurrency: 2
+  ignoreFailed: false
+ruleTemplates:
+  - steam-direct-enhanced
+policy:
+  gamePlatformDirect:
+    - steam
+    - epic
+hooks:
+  js:
+    files:
+      - ./hook.js
+    timeoutMs: 1000

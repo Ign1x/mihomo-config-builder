@@ -1,0 +1,19 @@
+subscriptions:
+  - file: ./subscription.yaml
+overrides:
+  patches:
+    - type: yaml-merge
+      patch:
+        mode: rule
+        log-level: info
+ruleTemplates:
+  - cn-direct
+output:
+  deterministic: true
+  sortKeys: true
+  keepComments: false
+fetch:
+  timeoutSeconds: 12
+  retries: 1
+  concurrency: 2
+  ignoreFailed: false

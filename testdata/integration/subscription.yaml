@@ -1,0 +1,20 @@
+proxies:
+  - name: HK-01
+    type: ss
+    server: hk.example.com
+    port: 443
+    cipher: aes-128-gcm
+    password: pass
+proxy-groups:
+  - name: PROXY
+    type: select
+    proxies:
+      - HK-01
+      - DIRECT
+rules:
+  - MATCH,PROXY
+dns:
+  enable: true
+  enhanced-mode: fake-ip
+  fake-ip-filter:
+    - +.lan
