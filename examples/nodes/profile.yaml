@@ -1,0 +1,13 @@
+subscriptions:
+  - nodesFile: ./nodes.txt
+
+output:
+  deterministic: true
+  sortKeys: true
+  keepComments: false
+
+fetch:
+  timeoutSeconds: 15
+  retries: 1
+  concurrency: 2
+  ignoreFailed: false

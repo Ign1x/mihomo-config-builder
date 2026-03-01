@@ -1,17 +1,24 @@
 package source
 
 import (
+	"bufio"
 	"context"
+	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/ign1x/mihomo-config-builder/internal/configfile"
 	"github.com/ign1x/mihomo-config-builder/internal/profile"
 	"github.com/ign1x/mihomo-config-builder/internal/util"
 )
@@ -89,6 +96,21 @@ func (f *Fetcher) LoadSubscriptions(ctx context.Context, p profile.Profile, prof
 }
 
 func (f *Fetcher) loadOne(ctx context.Context, ref profile.SourceRef, profilePath string) ([]byte, error) {
+	if ref.NodesFile != "" {
+		path := ref.NodesFile
+		if !filepath.IsAbs(path) {
+			path = filepath.Join(filepath.Dir(profilePath), ref.NodesFile)
+		}
+		b, err := os.ReadFile(path)
+		if err != nil {
+			return nil, fmt.Errorf("read nodes file %q: %w", ref.NodesFile, err)
+		}
+		converted, err := convertNodesFileToSubscriptionYAML(b)
+		if err != nil {
+			return nil, fmt.Errorf("convert nodes file %q: %w", ref.NodesFile, err)
+		}
+		return converted, nil
+	}
 	if ref.URL != "" {
 		b, err := f.loadURL(ctx, ref.URL)
 		if err != nil {
@@ -151,4 +173,649 @@ func (f *Fetcher) loadURL(ctx context.Context, rawURL string) ([]byte, error) {
 
 func isHTTP(s string) bool {
 	return strings.HasPrefix(s, "http://") || strings.HasPrefix(s, "https://")
+}
+
+type vmessNode struct {
+	Add  string `json:"add"`
+	Port any    `json:"port"`
+	ID   string `json:"id"`
+	Aid  any    `json:"aid"`
+	Net  string `json:"net"`
+	Host string `json:"host"`
+	Path string `json:"path"`
+	TLS  string `json:"tls"`
+	SNI  string `json:"sni"`
+	PS   string `json:"ps"`
+	Scy  string `json:"scy"`
+}
+
+func convertNodesFileToSubscriptionYAML(data []byte) ([]byte, error) {
+	proxies := make([]any, 0)
+	seenProxyNames := make(map[string]struct{})
+	nameCounts := make(map[string]int)
+	scanner := bufio.NewScanner(strings.NewReader(string(data)))
+	scanner.Buffer(make([]byte, 0, 64*1024), 2*1024*1024)
+	lineNo := 0
+	for scanner.Scan() {
+		lineNo++
+		line := normalizeNodeLine(scanner.Text())
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		proxy, err := parseNodeLine(line)
+		if err != nil {
+			return nil, fmt.Errorf("line %d: %w", lineNo, err)
+		}
+		ensureUniqueProxyName(proxy, lineNo, seenProxyNames, nameCounts)
+		proxies = append(proxies, proxy)
+	}
+	if err := scanner.Err(); err != nil {
+		return nil, fmt.Errorf("scan nodes file: %w", err)
+	}
+	if len(proxies) == 0 {
+		return nil, errors.New("nodes file has no valid nodes")
+	}
+
+	groupProxies := make([]any, 0, len(proxies)+1)
+	for _, p := range proxies {
+		name, _ := p.(map[string]any)["name"].(string)
+		if name != "" {
+			groupProxies = append(groupProxies, name)
+		}
+	}
+	groupProxies = append(groupProxies, "DIRECT")
+
+	subscription := map[string]any{
+		"proxies": proxies,
+		"proxy-groups": []any{
+			map[string]any{
+				"name":    "PROXY",
+				"type":    "select",
+				"proxies": groupProxies,
+			},
+		},
+		"rules": []any{"MATCH,PROXY"},
+	}
+
+	return configfile.MarshalYAML(subscription, true, true)
+}
+
+func ensureUniqueProxyName(proxy map[string]any, lineNo int, seen map[string]struct{}, counts map[string]int) {
+	name := ""
+	if rawName, ok := proxy["name"].(string); ok {
+		name = strings.TrimSpace(rawName)
+	}
+	if name == "" {
+		name = fmt.Sprintf("NODE-%d", lineNo)
+	}
+
+	if _, exists := seen[name]; !exists {
+		seen[name] = struct{}{}
+		if _, ok := counts[name]; !ok {
+			counts[name] = 1
+		}
+		proxy["name"] = name
+		return
+	}
+
+	idx := counts[name]
+	if idx < 1 {
+		idx = 1
+	}
+	for {
+		idx++
+		candidate := fmt.Sprintf("%s-%d", name, idx)
+		if _, exists := seen[candidate]; exists {
+			continue
+		}
+		seen[candidate] = struct{}{}
+		counts[name] = idx
+		proxy["name"] = candidate
+		return
+	}
+}
+
+func parseNodeLine(line string) (map[string]any, error) {
+	sep := strings.Index(line, "://")
+	if sep <= 0 {
+		return nil, fmt.Errorf("unsupported node scheme")
+	}
+	scheme := strings.ToLower(strings.TrimSpace(line[:sep]))
+	normalized := scheme + "://" + line[sep+3:]
+
+	switch scheme {
+	case "ss":
+		return parseSS(normalized)
+	case "vmess":
+		return parseVMess(normalized)
+	case "trojan":
+		return parseTrojan(normalized)
+	case "vless":
+		return parseVLess(normalized)
+	case "hysteria2", "hy2":
+		return parseHysteria2(normalized)
+	case "socks5", "socks", "sock5":
+		return parseSocks(normalized)
+	case "http", "https":
+		return parseHTTPProxy(normalized)
+	default:
+		return nil, fmt.Errorf("unsupported node scheme %q", scheme)
+	}
+}
+
+func parseURLHostPort(u *url.URL, scheme string) (string, int, error) {
+	host := strings.TrimSpace(u.Hostname())
+	if host == "" {
+		return "", 0, fmt.Errorf("invalid %s host: host is required", scheme)
+	}
+	portText := strings.TrimSpace(u.Port())
+	if portText == "" {
+		return "", 0, fmt.Errorf("invalid %s port: port is required", scheme)
+	}
+	port, err := strconv.Atoi(portText)
+	if err != nil {
+		return "", 0, fmt.Errorf("invalid %s port: %w", scheme, err)
+	}
+	return host, port, nil
+}
+
+func parseSocks(raw string) (map[string]any, error) {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return nil, fmt.Errorf("parse socks url: %w", err)
+	}
+	host, port, err := parseURLHostPort(u, "socks")
+	if err != nil {
+		return nil, err
+	}
+	name := strings.TrimSpace(u.Fragment)
+	if name == "" {
+		name = "SOCKS5"
+	}
+
+	out := map[string]any{
+		"name":   name,
+		"type":   "socks5",
+		"server": host,
+		"port":   port,
+		"udp":    true,
+	}
+
+	if u.User != nil {
+		if username := u.User.Username(); username != "" {
+			out["username"] = username
+		}
+		if password, ok := u.User.Password(); ok {
+			out["password"] = password
+		}
+	}
+
+	return out, nil
+}
+
+func parseHTTPProxy(raw string) (map[string]any, error) {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return nil, fmt.Errorf("parse http proxy url: %w", err)
+	}
+	host, port, err := parseURLHostPort(u, "http proxy")
+	if err != nil {
+		return nil, err
+	}
+	name := strings.TrimSpace(u.Fragment)
+	if name == "" {
+		name = "HTTP"
+	}
+
+	out := map[string]any{
+		"name":   name,
+		"type":   "http",
+		"server": host,
+		"port":   port,
+	}
+
+	if strings.EqualFold(u.Scheme, "https") {
+		out["tls"] = true
+	}
+
+	if u.User != nil {
+		if username := u.User.Username(); username != "" {
+			out["username"] = username
+		}
+		if password, ok := u.User.Password(); ok {
+			out["password"] = password
+		}
+	}
+
+	return out, nil
+}
+
+func parseHysteria2(raw string) (map[string]any, error) {
+	normalized := raw
+	if strings.HasPrefix(normalized, "hy2://") {
+		normalized = "hysteria2://" + strings.TrimPrefix(normalized, "hy2://")
+	}
+	u, err := url.Parse(normalized)
+	if err != nil {
+		return nil, fmt.Errorf("parse hysteria2 url: %w", err)
+	}
+	host, port, err := parseURLHostPort(u, "hysteria2")
+	if err != nil {
+		return nil, err
+	}
+
+	name := strings.TrimSpace(u.Fragment)
+	if name == "" {
+		name = "Hysteria2"
+	}
+
+	password := ""
+	if u.User != nil {
+		password = u.User.Username()
+	}
+	if password == "" {
+		password = strings.TrimSpace(u.Query().Get("password"))
+	}
+	if password == "" {
+		return nil, errors.New("hysteria2 password is required")
+	}
+
+	query := u.Query()
+	out := map[string]any{
+		"name":     name,
+		"type":     "hysteria2",
+		"server":   host,
+		"port":     port,
+		"password": password,
+	}
+
+	if sni := strings.TrimSpace(query.Get("sni")); sni != "" {
+		out["sni"] = sni
+	}
+	if strings.EqualFold(query.Get("insecure"), "1") || strings.EqualFold(query.Get("insecure"), "true") {
+		out["skip-cert-verify"] = true
+	}
+	if alpnRaw := strings.TrimSpace(query.Get("alpn")); alpnRaw != "" {
+		parts := strings.Split(alpnRaw, ",")
+		alpn := make([]any, 0, len(parts))
+		for _, part := range parts {
+			p := strings.TrimSpace(part)
+			if p != "" {
+				alpn = append(alpn, p)
+			}
+		}
+		if len(alpn) > 0 {
+			out["alpn"] = alpn
+		}
+	}
+	if obfs := strings.TrimSpace(query.Get("obfs")); obfs != "" {
+		out["obfs"] = obfs
+	}
+	if obfsPassword := strings.TrimSpace(query.Get("obfs-password")); obfsPassword != "" {
+		out["obfs-password"] = obfsPassword
+	}
+
+	return out, nil
+}
+
+func parseSS(raw string) (map[string]any, error) {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return nil, fmt.Errorf("parse ss url: %w", err)
+	}
+
+	name := strings.TrimSpace(u.Fragment)
+	if name == "" {
+		name = "SS"
+	}
+
+	server := ""
+	port := 0
+	cipher := ""
+	password := ""
+
+	if u.User != nil && u.Host != "" {
+		username := strings.TrimSpace(u.User.Username())
+		if username == "" {
+			return nil, errors.New("invalid ss credential")
+		}
+
+		pwd, hasPassword := u.User.Password()
+		if hasPassword {
+			cipher = username
+			password = pwd
+		} else {
+			if method, pass, ok := splitCipherPassword(username); ok {
+				cipher = method
+				password = pass
+			} else {
+				decoded, decodeErr := decodeNodeBase64(username)
+				if decodeErr != nil {
+					return nil, errors.New("invalid ss credential")
+				}
+				method, pass, ok := splitCipherPassword(decoded)
+				if !ok {
+					return nil, errors.New("invalid ss credential")
+				}
+				cipher = method
+				password = pass
+			}
+		}
+		server, port, err = parseURLHostPort(u, "ss")
+		if err != nil {
+			return nil, err
+		}
+	} else {
+		base := strings.TrimPrefix(raw, "ss://")
+		if idx := strings.Index(base, "#"); idx >= 0 {
+			base = base[:idx]
+		}
+		if idx := strings.Index(base, "?"); idx >= 0 {
+			base = base[:idx]
+		}
+		decoded, decodeErr := decodeNodeBase64(base)
+		if decodeErr != nil {
+			return nil, fmt.Errorf("decode ss payload: %w", decodeErr)
+		}
+		at := strings.LastIndex(decoded, "@")
+		if at < 0 {
+			return nil, errors.New("invalid ss payload")
+		}
+		methodPwd := decoded[:at]
+		hostPort := decoded[at+1:]
+		colon := strings.Index(methodPwd, ":")
+		if colon < 0 {
+			return nil, errors.New("invalid ss cipher/password")
+		}
+		cipher = methodPwd[:colon]
+		password = methodPwd[colon+1:]
+		host, portStr, splitErr := net.SplitHostPort(hostPort)
+		if splitErr != nil {
+			return nil, fmt.Errorf("invalid ss host: %w", splitErr)
+		}
+		server = host
+		port, err = strconv.Atoi(portStr)
+		if err != nil {
+			return nil, fmt.Errorf("invalid ss port: %w", err)
+		}
+	}
+
+	if strings.TrimSpace(server) == "" {
+		return nil, errors.New("ss server is required")
+	}
+	if port <= 0 {
+		return nil, errors.New("ss port is required")
+	}
+	if strings.TrimSpace(cipher) == "" {
+		return nil, errors.New("ss cipher is required")
+	}
+
+	return map[string]any{
+		"name":     name,
+		"type":     "ss",
+		"server":   server,
+		"port":     port,
+		"cipher":   cipher,
+		"password": password,
+	}, nil
+}
+
+func parseVMess(raw string) (map[string]any, error) {
+	payload := strings.TrimPrefix(raw, "vmess://")
+	decoded, err := decodeNodeBase64(payload)
+	if err != nil {
+		return nil, fmt.Errorf("decode vmess payload: %w", err)
+	}
+
+	var n vmessNode
+	if err := json.Unmarshal([]byte(decoded), &n); err != nil {
+		return nil, fmt.Errorf("unmarshal vmess json: %w", err)
+	}
+
+	port, err := parseIntLike(n.Port)
+	if err != nil {
+		return nil, fmt.Errorf("invalid vmess port: %w", err)
+	}
+	if port <= 0 {
+		return nil, errors.New("vmess port is required")
+	}
+	aid, _ := parseIntLike(n.Aid)
+	server := strings.TrimSpace(n.Add)
+	if server == "" {
+		return nil, errors.New("vmess server is required")
+	}
+	uuid := strings.TrimSpace(n.ID)
+	if uuid == "" {
+		return nil, errors.New("vmess uuid is required")
+	}
+
+	name := strings.TrimSpace(n.PS)
+	if name == "" {
+		name = "VMess"
+	}
+
+	out := map[string]any{
+		"name":    name,
+		"type":    "vmess",
+		"server":  server,
+		"port":    port,
+		"uuid":    uuid,
+		"alterId": aid,
+		"cipher":  firstNonEmpty(n.Scy, "auto"),
+		"tls":     strings.EqualFold(n.TLS, "tls") || strings.EqualFold(n.TLS, "1") || strings.EqualFold(n.TLS, "true"),
+		"udp":     true,
+	}
+
+	network := strings.TrimSpace(n.Net)
+	if network != "" {
+		out["network"] = network
+	}
+
+	if network == "ws" {
+		wsOpts := map[string]any{}
+		if path := strings.TrimSpace(n.Path); path != "" {
+			wsOpts["path"] = path
+		}
+		if host := strings.TrimSpace(n.Host); host != "" {
+			wsOpts["headers"] = map[string]any{"Host": host}
+		}
+		if len(wsOpts) > 0 {
+			out["ws-opts"] = wsOpts
+		}
+	}
+
+	if sni := strings.TrimSpace(firstNonEmpty(n.SNI, n.Host)); sni != "" {
+		out["servername"] = sni
+	}
+
+	return out, nil
+}
+
+func parseTrojan(raw string) (map[string]any, error) {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return nil, fmt.Errorf("parse trojan url: %w", err)
+	}
+	host, port, err := parseURLHostPort(u, "trojan")
+	if err != nil {
+		return nil, err
+	}
+	name := strings.TrimSpace(u.Fragment)
+	if name == "" {
+		name = "Trojan"
+	}
+	password := ""
+	if u.User != nil {
+		password = strings.TrimSpace(u.User.Username())
+	}
+	if password == "" {
+		return nil, errors.New("trojan password is required")
+	}
+
+	out := map[string]any{
+		"name":     name,
+		"type":     "trojan",
+		"server":   host,
+		"port":     port,
+		"password": password,
+		"udp":      true,
+	}
+
+	query := u.Query()
+	if sni := strings.TrimSpace(query.Get("sni")); sni != "" {
+		out["sni"] = sni
+	} else {
+		out["sni"] = host
+	}
+	if strings.EqualFold(query.Get("allowInsecure"), "1") || strings.EqualFold(query.Get("allowInsecure"), "true") {
+		out["skip-cert-verify"] = true
+	}
+
+	if strings.EqualFold(query.Get("type"), "ws") {
+		wsOpts := map[string]any{}
+		if path := query.Get("path"); path != "" {
+			wsOpts["path"] = path
+		}
+		if hostHeader := query.Get("host"); hostHeader != "" {
+			wsOpts["headers"] = map[string]any{"Host": hostHeader}
+		}
+		if len(wsOpts) > 0 {
+			out["network"] = "ws"
+			out["ws-opts"] = wsOpts
+		}
+	}
+
+	return out, nil
+}
+
+func parseVLess(raw string) (map[string]any, error) {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return nil, fmt.Errorf("parse vless url: %w", err)
+	}
+	host, port, err := parseURLHostPort(u, "vless")
+	if err != nil {
+		return nil, err
+	}
+	name := strings.TrimSpace(u.Fragment)
+	if name == "" {
+		name = "VLESS"
+	}
+	uuid := ""
+	if u.User != nil {
+		uuid = strings.TrimSpace(u.User.Username())
+	}
+	if uuid == "" {
+		return nil, errors.New("vless uuid is required")
+	}
+
+	query := u.Query()
+	network := firstNonEmpty(query.Get("type"), query.Get("net"))
+	if network == "" {
+		network = "tcp"
+	}
+	security := firstNonEmpty(query.Get("security"), "none")
+
+	out := map[string]any{
+		"name":       name,
+		"type":       "vless",
+		"server":     host,
+		"port":       port,
+		"uuid":       uuid,
+		"network":    network,
+		"tls":        strings.EqualFold(security, "tls") || strings.EqualFold(security, "reality"),
+		"udp":        true,
+		"servername": firstNonEmpty(query.Get("sni"), host),
+	}
+
+	if flow := strings.TrimSpace(query.Get("flow")); flow != "" {
+		out["flow"] = flow
+	}
+	if fp := strings.TrimSpace(query.Get("fp")); fp != "" {
+		out["client-fingerprint"] = fp
+	}
+	if pbk := strings.TrimSpace(query.Get("pbk")); pbk != "" {
+		realityOpts := map[string]any{"public-key": pbk}
+		if sid := strings.TrimSpace(query.Get("sid")); sid != "" {
+			realityOpts["short-id"] = sid
+		}
+		out["reality-opts"] = realityOpts
+	}
+
+	if network == "ws" {
+		wsOpts := map[string]any{}
+		if path := query.Get("path"); path != "" {
+			wsOpts["path"] = path
+		}
+		if hostHeader := query.Get("host"); hostHeader != "" {
+			wsOpts["headers"] = map[string]any{"Host": hostHeader}
+		}
+		if len(wsOpts) > 0 {
+			out["ws-opts"] = wsOpts
+		}
+	}
+
+	return out, nil
+}
+
+func decodeNodeBase64(s string) (string, error) {
+	trimmed := strings.TrimSpace(s)
+	trimmed = strings.ReplaceAll(trimmed, "-", "+")
+	trimmed = strings.ReplaceAll(trimmed, "_", "/")
+	if mod := len(trimmed) % 4; mod != 0 {
+		trimmed += strings.Repeat("=", 4-mod)
+	}
+
+	if b, err := base64.StdEncoding.DecodeString(trimmed); err == nil {
+		return string(b), nil
+	}
+	if b, err := base64.RawStdEncoding.DecodeString(trimmed); err == nil {
+		return string(b), nil
+	}
+	if b, err := base64.URLEncoding.DecodeString(trimmed); err == nil {
+		return string(b), nil
+	}
+	if b, err := base64.RawURLEncoding.DecodeString(trimmed); err == nil {
+		return string(b), nil
+	}
+
+	return "", errors.New("invalid base64 payload")
+}
+
+func parseIntLike(v any) (int, error) {
+	switch t := v.(type) {
+	case int:
+		return t, nil
+	case int64:
+		return int(t), nil
+	case float64:
+		return int(t), nil
+	case string:
+		return strconv.Atoi(strings.TrimSpace(t))
+	default:
+		return 0, fmt.Errorf("unsupported type %T", v)
+	}
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, v := range values {
+		if strings.TrimSpace(v) != "" {
+			return v
+		}
+	}
+	return ""
+}
+
+func normalizeNodeLine(line string) string {
+	trimmed := strings.TrimSpace(line)
+	return strings.TrimPrefix(trimmed, "\uFEFF")
+}
+
+func splitCipherPassword(value string) (cipher string, password string, ok bool) {
+	raw := strings.TrimSpace(value)
+	sep := strings.Index(raw, ":")
+	if sep <= 0 || sep == len(raw)-1 {
+		return "", "", false
+	}
+	return raw[:sep], raw[sep+1:], true
 }

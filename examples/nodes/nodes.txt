@@ -1,0 +1,5 @@
+# One URI per line
+ss://YWVzLTEyOC1nY206cGFzc3dvcmRAc3MuZXhhbXBsZS5jb206ODM4OA==#ss-node
+socks5://user:pass@socks.example.com:1080#socks-node
+http://user:pass@http.example.com:8080#http-node
+https://https.example.com:8443#https-node

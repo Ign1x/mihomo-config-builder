@@ -1,6 +1,9 @@
 package merge
 
-import "fmt"
+import (
+	"fmt"
+	"strings"
+)
 
 var appendListKeys = map[string]struct{}{
 	"proxies":      {},
@@ -85,6 +88,10 @@ func DeduplicateProxyLike(root map[string]any, key string) {
 	if !ok {
 		return
 	}
+	if key == "proxy-groups" {
+		root[key] = deduplicateProxyGroups(list)
+		return
+	}
 	seen := map[string]struct{}{}
 	out := make([]any, 0, len(list))
 	for _, item := range list {
@@ -105,6 +112,77 @@ func DeduplicateProxyLike(root map[string]any, key string) {
 		out = append(out, item)
 	}
 	root[key] = out
+}
+
+func deduplicateProxyGroups(list []any) []any {
+	indexByName := map[string]int{}
+	out := make([]any, 0, len(list))
+
+	for _, item := range list {
+		group, ok := item.(map[string]any)
+		if !ok {
+			out = append(out, item)
+			continue
+		}
+		name, _ := group["name"].(string)
+		if name == "" {
+			out = append(out, item)
+			continue
+		}
+
+		if idx, exists := indexByName[name]; exists {
+			existing, ok := out[idx].(map[string]any)
+			if !ok {
+				continue
+			}
+			mergeProxyGroup(existing, group)
+			out[idx] = existing
+			continue
+		}
+
+		indexByName[name] = len(out)
+		out = append(out, item)
+	}
+
+	return out
+}
+
+func mergeProxyGroup(dst map[string]any, src map[string]any) {
+	dstProxies, hasDstProxies := dst["proxies"].([]any)
+	srcProxies, hasSrcProxies := src["proxies"].([]any)
+	if !hasSrcProxies {
+		return
+	}
+	if !hasDstProxies {
+		dst["proxies"] = deepCopySlice(srcProxies)
+		return
+	}
+
+	seen := map[string]struct{}{}
+	merged := make([]any, 0, len(dstProxies)+len(srcProxies))
+	appendUniqueProxyRefs(&merged, dstProxies, seen)
+	appendUniqueProxyRefs(&merged, srcProxies, seen)
+	dst["proxies"] = merged
+}
+
+func appendUniqueProxyRefs(dst *[]any, src []any, seen map[string]struct{}) {
+	for _, item := range src {
+		name, ok := item.(string)
+		if !ok {
+			*dst = append(*dst, DeepCopy(item))
+			continue
+		}
+		key := strings.TrimSpace(name)
+		if key == "" {
+			*dst = append(*dst, name)
+			continue
+		}
+		if _, exists := seen[key]; exists {
+			continue
+		}
+		seen[key] = struct{}{}
+		*dst = append(*dst, name)
+	}
 }
 
 func toAnySlice(v any) ([]any, error) {

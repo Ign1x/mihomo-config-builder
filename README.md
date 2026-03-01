@@ -4,6 +4,7 @@
 
 Input:
 - one or more subscriptions (URL or local file)
+- or one or more local `nodes.txt` sources (`nodesFile`)
 - override patches (YAML merge / JSON patch)
 - optional template
 
@@ -53,6 +54,7 @@ go build -o bin/mcb ./cmd/mcb
 subscriptions:
   - url: https://example.com/sub?token=***
   - file: ./subscription.yaml
+  - nodesFile: ./nodes.txt
 
 template: ./base-template.yaml
 
@@ -128,6 +130,16 @@ The hook runtime is embedded and does not depend on external Node/Bun/Deno.
 
 - `examples/basic/profile.yaml`
 - `examples/steam-direct/profile.yaml`
+- `examples/nodes/profile.yaml`
+
+`nodes.txt` (one node URI per line, `#` comment supported) currently supports:
+- `ss://`
+- `vmess://`
+- `trojan://`
+- `vless://`
+- `hysteria2://` / `hy2://`
+- `socks5://` / `socks://` / `sock5://`
+- `http://` / `https://`
 
 ## Reliability and Security
 
@@ -194,5 +206,5 @@ See `docs/research.md` for upstream references and license-risk mitigation.
 
 ## Release Notes
 
-- Current release notes draft: `docs/releases/v0.1.0.md`
+- Current release notes draft: `docs/releases/v0.2.0.md`
 - Release checklist: `docs/releases/checklist.md`

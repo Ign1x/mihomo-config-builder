@@ -50,6 +50,9 @@ func encodeIntoNode(n *yaml.Node, v any, sortKeys bool) error {
 		n.Kind = yaml.ScalarNode
 		n.Tag = "!!str"
 		n.Value = t
+		if hasNonASCII(t) {
+			n.Style = yaml.SingleQuotedStyle
+		}
 		return nil
 	case bool:
 		n.Kind = yaml.ScalarNode
@@ -79,4 +82,13 @@ func encodeIntoNode(n *yaml.Node, v any, sortKeys bool) error {
 	default:
 		return fmt.Errorf("unsupported value type: %T", v)
 	}
+}
+
+func hasNonASCII(s string) bool {
+	for _, r := range s {
+		if r > 127 {
+			return true
+		}
+	}
+	return false
 }

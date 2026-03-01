@@ -1,10 +1,10 @@
-# Release Checklist (v0.1.0)
+# Release Checklist (v0.2.0)
 
 ## 1) Version and metadata
 
-- [ ] Confirm tag version: `v0.1.0`
+- [ ] Confirm tag version: `v0.2.0`
 - [ ] Confirm `nix/package.nix` version matches release
-- [ ] Confirm release notes file exists: `docs/releases/v0.1.0.md`
+- [ ] Confirm release notes file exists: `docs/releases/v0.2.0.md`
 
 ## 2) Build and quality gates
 
@@ -30,9 +30,9 @@
 
 ## 5) Release artifacts
 
-- [ ] Git tag created: `git tag v0.1.0`
-- [ ] Push tag to remote: `git push origin v0.1.0`
-- [ ] GitHub Release created using notes from `docs/releases/v0.1.0.md`
+- [ ] Git tag created: `git tag v0.2.0`
+- [ ] Push tag to remote: `git push origin v0.2.0`
+- [ ] GitHub Release created using notes from `docs/releases/v0.2.0.md`
 
 ## 6) Post-release
 

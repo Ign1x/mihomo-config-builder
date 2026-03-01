@@ -50,6 +50,23 @@ ruleTemplates: [cn-direct]
 	}
 }
 
+func TestReadProfileWithNodesFile(t *testing.T) {
+	body := `
+subscriptions:
+  - nodesFile: ./nodes.txt
+`
+	p, err := Read(strings.NewReader(body))
+	if err != nil {
+		t.Fatalf("read profile: %v", err)
+	}
+	if len(p.Subscriptions) != 1 {
+		t.Fatalf("unexpected subscriptions len: %d", len(p.Subscriptions))
+	}
+	if p.Subscriptions[0].NodesFile != "./nodes.txt" {
+		t.Fatalf("unexpected nodesFile: %q", p.Subscriptions[0].NodesFile)
+	}
+}
+
 func TestValidateRequiresInput(t *testing.T) {
 	_, err := Read(strings.NewReader(`output: { deterministic: true, sortKeys: true, keepComments: false }`))
 	if err == nil {

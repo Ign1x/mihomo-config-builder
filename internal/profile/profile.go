@@ -21,8 +21,9 @@ type Profile struct {
 }
 
 type SourceRef struct {
-	URL  string `yaml:"url,omitempty" json:"url,omitempty"`
-	File string `yaml:"file,omitempty" json:"file,omitempty"`
+	URL       string `yaml:"url,omitempty" json:"url,omitempty"`
+	File      string `yaml:"file,omitempty" json:"file,omitempty"`
+	NodesFile string `yaml:"nodesFile,omitempty" json:"nodesFile,omitempty"`
 }
 
 type OverrideConfig struct {
@@ -117,8 +118,19 @@ func (p Profile) Validate() error {
 	for i, s := range p.Subscriptions {
 		hasURL := s.URL != ""
 		hasFile := s.File != ""
-		if hasURL == hasFile {
-			return fmt.Errorf("subscriptions[%d] must set exactly one of url or file", i)
+		hasNodesFile := s.NodesFile != ""
+		count := 0
+		if hasURL {
+			count++
+		}
+		if hasFile {
+			count++
+		}
+		if hasNodesFile {
+			count++
+		}
+		if count != 1 {
+			return fmt.Errorf("subscriptions[%d] must set exactly one of url, file or nodesFile", i)
 		}
 	}
 	if p.Fetch.TimeoutSeconds < 0 {
