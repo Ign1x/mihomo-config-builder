@@ -211,5 +211,5 @@ See `docs/research.md` for upstream references and license-risk mitigation.
 
 ## Release Notes
 
-- Current release notes draft: `docs/releases/v0.2.0.md`
+- Current release notes draft: `docs/releases/v0.2.1.md`
 - Release checklist: `docs/releases/checklist.md`
