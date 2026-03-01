@@ -328,7 +328,7 @@ func parseSocks(raw string) (map[string]any, error) {
 	if err != nil {
 		return nil, err
 	}
-	name := strings.TrimSpace(u.Fragment)
+	name := decodeNodeNameFragment(u.Fragment)
 	if name == "" {
 		name = "SOCKS5"
 	}
@@ -362,7 +362,7 @@ func parseHTTPProxy(raw string) (map[string]any, error) {
 	if err != nil {
 		return nil, err
 	}
-	name := strings.TrimSpace(u.Fragment)
+	name := decodeNodeNameFragment(u.Fragment)
 	if name == "" {
 		name = "HTTP"
 	}
@@ -404,7 +404,7 @@ func parseHysteria2(raw string) (map[string]any, error) {
 		return nil, err
 	}
 
-	name := strings.TrimSpace(u.Fragment)
+	name := decodeNodeNameFragment(u.Fragment)
 	if name == "" {
 		name = "Hysteria2"
 	}
@@ -464,7 +464,7 @@ func parseSS(raw string) (map[string]any, error) {
 		return nil, fmt.Errorf("parse ss url: %w", err)
 	}
 
-	name := strings.TrimSpace(u.Fragment)
+	name := decodeNodeNameFragment(u.Fragment)
 	if name == "" {
 		name = "SS"
 	}
@@ -640,7 +640,7 @@ func parseTrojan(raw string) (map[string]any, error) {
 	if err != nil {
 		return nil, err
 	}
-	name := strings.TrimSpace(u.Fragment)
+	name := decodeNodeNameFragment(u.Fragment)
 	if name == "" {
 		name = "Trojan"
 	}
@@ -697,7 +697,7 @@ func parseVLess(raw string) (map[string]any, error) {
 	if err != nil {
 		return nil, err
 	}
-	name := strings.TrimSpace(u.Fragment)
+	name := decodeNodeNameFragment(u.Fragment)
 	if name == "" {
 		name = "VLESS"
 	}
@@ -809,6 +809,18 @@ func firstNonEmpty(values ...string) string {
 func normalizeNodeLine(line string) string {
 	trimmed := strings.TrimSpace(line)
 	return strings.TrimPrefix(trimmed, "\uFEFF")
+}
+
+func decodeNodeNameFragment(fragment string) string {
+	name := strings.TrimSpace(fragment)
+	if name == "" {
+		return ""
+	}
+	decoded, err := url.PathUnescape(name)
+	if err != nil {
+		return name
+	}
+	return strings.TrimSpace(decoded)
 }
 
 func splitCipherPassword(value string) (cipher string, password string, ok bool) {

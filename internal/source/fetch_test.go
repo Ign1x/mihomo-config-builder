@@ -71,6 +71,7 @@ func TestLoadSubscriptionsFromNodesFile(t *testing.T) {
 	ssNoName := "ss://" + base64.StdEncoding.EncodeToString([]byte("aes-128-gcm:password@ss2.example.com:8388"))
 	ssNoName2 := "ss://" + base64.StdEncoding.EncodeToString([]byte("aes-128-gcm:password@ss3.example.com:8388"))
 	socksLine := "socks5://user:pass@socks.example.com:1080#socks-node"
+	socksEncodedName := "socks5://user:pass@socks-encoded.example.com:1080#%F0%9F%8F%AB%20%E6%A0%A1%E5%86%85%20FRP%20%E4%BB%A3%E7%90%86"
 	httpLine := "http://user:pass@http.example.com:8080#http-node"
 	httpsLine := "https://https.example.com:8443#https-node"
 	sock5Line := "sock5://sock5.example.com:1081#sock5-node"
@@ -78,7 +79,7 @@ func TestLoadSubscriptionsFromNodesFile(t *testing.T) {
 	vlessNode := "vless://22222222-2222-2222-2222-222222222222@vless.example.com:443?type=ws&security=tls&sni=vless.example.com&path=%2Fws#vless-node"
 	trojanNode := "trojan://secret@trojan.example.com:443?sni=trojan.example.com#trojan-node"
 	hy2Line := "hysteria2://secret@hy.example.com:8443?alpn=h3&insecure=1#hy2-node"
-	nodesContent := strings.Join([]string{ssLine, ssSIP002UserInfo, ssNoName, ssNoName2, vmessLine, socksLine, sock5Line, httpLine, httpsLine, upperCaseScheme, vlessNode, trojanNode, hy2Line}, "\n") + "\n"
+	nodesContent := strings.Join([]string{ssLine, ssSIP002UserInfo, ssNoName, ssNoName2, vmessLine, socksLine, socksEncodedName, sock5Line, httpLine, httpsLine, upperCaseScheme, vlessNode, trojanNode, hy2Line}, "\n") + "\n"
 
 	dir := t.TempDir()
 	nodesPath := filepath.Join(dir, "nodes.txt")
@@ -123,6 +124,12 @@ func TestLoadSubscriptionsFromNodesFile(t *testing.T) {
 	}
 	if !strings.Contains(string(res[0].Data), "name: ss-sip002-userinfo") {
 		t.Fatalf("converted subscription missing ss sip002 userinfo node")
+	}
+	if !strings.Contains(string(res[0].Data), "socks-encoded.example.com") {
+		t.Fatalf("converted subscription missing encoded-name socks node")
+	}
+	if strings.Contains(string(res[0].Data), "%20") {
+		t.Fatalf("converted subscription should not keep percent-encoded node name fragment")
 	}
 	if !strings.Contains(string(res[0].Data), "type: hysteria2") {
 		t.Fatalf("converted subscription missing hysteria2 node")
