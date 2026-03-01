@@ -105,7 +105,7 @@ func (f *Fetcher) loadOne(ctx context.Context, ref profile.SourceRef, profilePat
 		if err != nil {
 			return nil, fmt.Errorf("read nodes file %q: %w", ref.NodesFile, err)
 		}
-		converted, err := convertNodesFileToSubscriptionYAML(b)
+		converted, err := f.convertNodesFileToSubscriptionYAML(ctx, b)
 		if err != nil {
 			return nil, fmt.Errorf("convert nodes file %q: %w", ref.NodesFile, err)
 		}
@@ -189,7 +189,7 @@ type vmessNode struct {
 	Scy  string `json:"scy"`
 }
 
-func convertNodesFileToSubscriptionYAML(data []byte) ([]byte, error) {
+func (f *Fetcher) convertNodesFileToSubscriptionYAML(ctx context.Context, data []byte) ([]byte, error) {
 	proxies := make([]any, 0)
 	seenProxyNames := make(map[string]struct{})
 	nameCounts := make(map[string]int)
@@ -202,12 +202,14 @@ func convertNodesFileToSubscriptionYAML(data []byte) ([]byte, error) {
 		if line == "" || strings.HasPrefix(line, "#") {
 			continue
 		}
-		proxy, err := parseNodeLine(line)
+		lineProxies, err := f.parseNodesFileLine(ctx, line)
 		if err != nil {
 			return nil, fmt.Errorf("line %d: %w", lineNo, err)
 		}
-		ensureUniqueProxyName(proxy, lineNo, seenProxyNames, nameCounts)
-		proxies = append(proxies, proxy)
+		for _, proxy := range lineProxies {
+			ensureUniqueProxyName(proxy, lineNo, seenProxyNames, nameCounts)
+			proxies = append(proxies, proxy)
+		}
 	}
 	if err := scanner.Err(); err != nil {
 		return nil, fmt.Errorf("scan nodes file: %w", err)
@@ -238,6 +240,202 @@ func convertNodesFileToSubscriptionYAML(data []byte) ([]byte, error) {
 	}
 
 	return configfile.MarshalYAML(subscription, true, true)
+}
+
+func (f *Fetcher) parseNodesFileLine(ctx context.Context, line string) ([]map[string]any, error) {
+	if subSpec, ok := parseNodesFileSubscriptionSpec(line); ok {
+		proxies, err := f.loadSubscriptionURLProxies(ctx, subSpec.URL)
+		if err == nil {
+			appendProxyNameSuffix(proxies, subSpec.NameSuffix)
+			return proxies, nil
+		}
+		proxy, parseErr := parseNodeLine(line)
+		if parseErr == nil {
+			return []map[string]any{proxy}, nil
+		}
+		return nil, err
+	}
+
+	if !isHTTP(line) {
+		proxy, err := parseNodeLine(line)
+		if err != nil {
+			return nil, err
+		}
+		return []map[string]any{proxy}, nil
+	}
+
+	proxy, err := parseNodeLine(line)
+	if err == nil {
+		return []map[string]any{proxy}, nil
+	}
+
+	proxies, subErr := f.loadSubscriptionURLProxies(ctx, line)
+	if subErr == nil {
+		return proxies, nil
+	}
+	return nil, err
+}
+
+type nodesFileSubscriptionSpec struct {
+	URL        string
+	NameSuffix string
+}
+
+func parseNodesFileSubscriptionSpec(line string) (nodesFileSubscriptionSpec, bool) {
+	u, err := url.Parse(strings.TrimSpace(line))
+	if err != nil {
+		return nodesFileSubscriptionSpec{}, false
+	}
+	scheme := strings.ToLower(strings.TrimSpace(u.Scheme))
+	if scheme != "http" && scheme != "https" {
+		return nodesFileSubscriptionSpec{}, false
+	}
+	if strings.TrimSpace(u.Hostname()) == "" {
+		return nodesFileSubscriptionSpec{}, false
+	}
+
+	suffix := strings.TrimSpace(u.Fragment)
+	u.Fragment = ""
+	if !looksLikeSubscriptionURL(u) {
+		return nodesFileSubscriptionSpec{}, false
+	}
+	return nodesFileSubscriptionSpec{
+		URL:        u.String(),
+		NameSuffix: suffix,
+	}, true
+}
+
+func looksLikeSubscriptionURL(u *url.URL) bool {
+	if u == nil {
+		return false
+	}
+	if strings.TrimSpace(u.RawQuery) != "" {
+		return true
+	}
+	path := strings.TrimSpace(u.EscapedPath())
+	if path != "" && path != "/" {
+		return true
+	}
+	return strings.TrimSpace(u.Port()) == ""
+}
+
+func (f *Fetcher) loadSubscriptionURLProxies(ctx context.Context, rawURL string) ([]map[string]any, error) {
+	body, err := f.loadURL(ctx, rawURL)
+	if err != nil {
+		return nil, fmt.Errorf("fetch subscription url %s: %w", util.RedactURL(rawURL), err)
+	}
+	proxies, err := parseSubscriptionPayloadProxies(body)
+	if err != nil {
+		return nil, fmt.Errorf("parse subscription content from %s: %w", util.RedactURL(rawURL), err)
+	}
+	return proxies, nil
+}
+
+func parseSubscriptionPayloadProxies(data []byte) ([]map[string]any, error) {
+	trimmed := strings.TrimSpace(string(data))
+	if trimmed == "" {
+		return nil, errors.New("subscription content is empty")
+	}
+
+	if proxies, err := extractYAMLProxies([]byte(trimmed)); err == nil {
+		return proxies, nil
+	}
+	if proxies, err := parseNodeLinesToProxies([]byte(trimmed)); err == nil {
+		return proxies, nil
+	}
+
+	compact := compactWhitespace(trimmed)
+	decoded, err := decodeNodeBase64(compact)
+	if err != nil {
+		return nil, errors.New("subscription content is neither yaml nor node links nor base64 payload")
+	}
+
+	if proxies, err := extractYAMLProxies([]byte(decoded)); err == nil {
+		return proxies, nil
+	}
+	if proxies, err := parseNodeLinesToProxies([]byte(decoded)); err == nil {
+		return proxies, nil
+	}
+	return nil, errors.New("decoded subscription payload has no valid proxies")
+}
+
+func extractYAMLProxies(data []byte) ([]map[string]any, error) {
+	cfg, err := configfile.DecodeYAMLBytes(data)
+	if err != nil {
+		return nil, err
+	}
+	rawProxies, ok := cfg["proxies"].([]any)
+	if !ok {
+		return nil, errors.New("yaml has no proxies field")
+	}
+	if len(rawProxies) == 0 {
+		return nil, errors.New("yaml proxies is empty")
+	}
+
+	proxies := make([]map[string]any, 0, len(rawProxies))
+	for i, rawProxy := range rawProxies {
+		m, ok := rawProxy.(map[string]any)
+		if !ok {
+			return nil, fmt.Errorf("proxies[%d] must be mapping", i)
+		}
+		proxies = append(proxies, m)
+	}
+	return proxies, nil
+}
+
+func parseNodeLinesToProxies(data []byte) ([]map[string]any, error) {
+	proxies := make([]map[string]any, 0)
+	scanner := bufio.NewScanner(strings.NewReader(string(data)))
+	scanner.Buffer(make([]byte, 0, 64*1024), 2*1024*1024)
+	lineNo := 0
+	for scanner.Scan() {
+		lineNo++
+		line := normalizeNodeLine(scanner.Text())
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		proxy, err := parseNodeLine(line)
+		if err != nil {
+			return nil, fmt.Errorf("line %d: %w", lineNo, err)
+		}
+		proxies = append(proxies, proxy)
+	}
+	if err := scanner.Err(); err != nil {
+		return nil, fmt.Errorf("scan node lines: %w", err)
+	}
+	if len(proxies) == 0 {
+		return nil, errors.New("no valid node lines")
+	}
+	return proxies, nil
+}
+
+func appendProxyNameSuffix(proxies []map[string]any, suffix string) {
+	trimmedSuffix := strings.TrimSpace(suffix)
+	if trimmedSuffix == "" {
+		return
+	}
+	for _, proxy := range proxies {
+		baseName := ""
+		if rawName, ok := proxy["name"].(string); ok {
+			baseName = strings.TrimSpace(rawName)
+		}
+		if baseName == "" {
+			baseName = "NODE"
+		}
+		proxy["name"] = baseName + " " + trimmedSuffix
+	}
+}
+
+func compactWhitespace(s string) string {
+	var b strings.Builder
+	b.Grow(len(s))
+	for _, r := range s {
+		if r == ' ' || r == '\n' || r == '\r' || r == '\t' {
+			continue
+		}
+		b.WriteRune(r)
+	}
+	return b.String()
 }
 
 func ensureUniqueProxyName(proxy map[string]any, lineNo int, seen map[string]struct{}, counts map[string]int) {

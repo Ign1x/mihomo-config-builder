@@ -132,7 +132,12 @@ The hook runtime is embedded and does not depend on external Node/Bun/Deno.
 - `examples/steam-direct/profile.yaml`
 - `examples/nodes/profile.yaml`
 
-`nodes.txt` (one node URI per line, `#` comment supported) currently supports:
+`nodes.txt` supports mixed input:
+- node URI lines (one per line, `#` full-line comment supported)
+- subscription URL lines (`http://` / `https://`, auto fetch + parse)
+- subscription URL can set node-name suffix via URL fragment, e.g. `https://example.com/sub?token=***#HK` (nodes become `原名 HK`)
+
+Node URI schemes currently supported:
 - `ss://`
 - `vmess://`
 - `trojan://`

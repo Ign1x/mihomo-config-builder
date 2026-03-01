@@ -190,3 +190,60 @@ func TestLoadSubscriptionsFromNodesFileMissingRequiredFields(t *testing.T) {
 		t.Fatalf("unexpected nodes error: %v", res[0].Err)
 	}
 }
+
+func TestLoadSubscriptionsFromNodesFileWithSubscriptionLinks(t *testing.T) {
+	subBase64Node := "ss://" + base64.StdEncoding.EncodeToString([]byte("aes-128-gcm:password@sub-ss.example.com:8388")) + "#from-sub-base64"
+	subBase64Payload := base64.StdEncoding.EncodeToString([]byte(subBase64Node + "\n"))
+	yamlPayload := "proxies:\n  - name: yaml-sub-node\n    type: socks5\n    server: yaml-socks.example.com\n    port: 1080\nproxy-groups: []\nrules: []\n"
+
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/sub-base64":
+			fmt.Fprint(w, subBase64Payload)
+		case "/sub-yaml":
+			fmt.Fprint(w, yamlPayload)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer ts.Close()
+
+	directNode := "socks5://user:pass@direct.example.com:1080#direct-node"
+	nodesContent := strings.Join([]string{
+		directNode,
+		ts.URL + "/sub-base64?token=abc#HK",
+		ts.URL + "/sub-yaml#JP",
+	}, "\n") + "\n"
+
+	dir := t.TempDir()
+	nodesPath := filepath.Join(dir, "nodes.txt")
+	if err := os.WriteFile(nodesPath, []byte(nodesContent), 0o644); err != nil {
+		t.Fatalf("write nodes file: %v", err)
+	}
+
+	f := New(5*time.Second, 1)
+	p := profile.DefaultProfile()
+	p.Subscriptions = []profile.SourceRef{{NodesFile: "nodes.txt"}}
+
+	res := f.LoadSubscriptions(context.Background(), p, filepath.Join(dir, "profile.yaml"))
+	if len(res) != 1 {
+		t.Fatalf("unexpected result size: %d", len(res))
+	}
+	if res[0].Err != nil {
+		t.Fatalf("unexpected nodes load error: %v", res[0].Err)
+	}
+
+	out := string(res[0].Data)
+	if !strings.Contains(out, "name: direct-node") {
+		t.Fatalf("missing direct node")
+	}
+	if !strings.Contains(out, "name: from-sub-base64 HK") {
+		t.Fatalf("missing node from base64 subscription link")
+	}
+	if !strings.Contains(out, "name: yaml-sub-node JP") {
+		t.Fatalf("missing node from yaml subscription link")
+	}
+	if strings.Contains(out, "type: http") {
+		t.Fatalf("subscription links should not be treated as http proxy nodes")
+	}
+}
