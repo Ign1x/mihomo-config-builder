@@ -116,7 +116,11 @@ func (f *Fetcher) loadOne(ctx context.Context, ref profile.SourceRef, profilePat
 		if err != nil {
 			return nil, fmt.Errorf("fetch subscription url %s: %w", util.RedactURL(ref.URL), err)
 		}
-		return b, nil
+		normalized, err := normalizeSubscriptionPayload(b)
+		if err != nil {
+			return nil, fmt.Errorf("parse subscription content from %s: %w", util.RedactURL(ref.URL), err)
+		}
+		return normalized, nil
 	}
 	path := ref.File
 	if !filepath.IsAbs(path) {
@@ -190,7 +194,7 @@ type vmessNode struct {
 }
 
 func (f *Fetcher) convertNodesFileToSubscriptionYAML(ctx context.Context, data []byte) ([]byte, error) {
-	proxies := make([]any, 0)
+	proxies := make([]map[string]any, 0)
 	seenProxyNames := make(map[string]struct{})
 	nameCounts := make(map[string]int)
 	scanner := bufio.NewScanner(strings.NewReader(string(data)))
@@ -218,17 +222,26 @@ func (f *Fetcher) convertNodesFileToSubscriptionYAML(ctx context.Context, data [
 		return nil, errors.New("nodes file has no valid nodes")
 	}
 
+	return buildSubscriptionYAMLFromProxies(proxies)
+}
+
+func buildSubscriptionYAMLFromProxies(proxies []map[string]any) ([]byte, error) {
 	groupProxies := make([]any, 0, len(proxies)+1)
-	for _, p := range proxies {
-		name, _ := p.(map[string]any)["name"].(string)
+	for _, proxy := range proxies {
+		name, _ := proxy["name"].(string)
 		if name != "" {
 			groupProxies = append(groupProxies, name)
 		}
 	}
 	groupProxies = append(groupProxies, "DIRECT")
 
+	rawProxies := make([]any, 0, len(proxies))
+	for _, proxy := range proxies {
+		rawProxies = append(rawProxies, proxy)
+	}
+
 	subscription := map[string]any{
-		"proxies": proxies,
+		"proxies": rawProxies,
 		"proxy-groups": []any{
 			map[string]any{
 				"name":    "PROXY",
@@ -329,6 +342,23 @@ func (f *Fetcher) loadSubscriptionURLProxies(ctx context.Context, rawURL string)
 		return nil, fmt.Errorf("parse subscription content from %s: %w", util.RedactURL(rawURL), err)
 	}
 	return proxies, nil
+}
+
+func normalizeSubscriptionPayload(data []byte) ([]byte, error) {
+	trimmed := strings.TrimSpace(string(data))
+	if trimmed == "" {
+		return nil, errors.New("subscription content is empty")
+	}
+
+	if _, err := configfile.DecodeYAMLBytes([]byte(trimmed)); err == nil {
+		return []byte(trimmed), nil
+	}
+
+	proxies, err := parseSubscriptionPayloadProxies([]byte(trimmed))
+	if err != nil {
+		return nil, err
+	}
+	return buildSubscriptionYAMLFromProxies(proxies)
 }
 
 func parseSubscriptionPayloadProxies(data []byte) ([]map[string]any, error) {

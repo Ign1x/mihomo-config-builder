@@ -247,3 +247,47 @@ func TestLoadSubscriptionsFromNodesFileWithSubscriptionLinks(t *testing.T) {
 		t.Fatalf("subscription links should not be treated as http proxy nodes")
 	}
 }
+
+func TestLoadSubscriptionsFromURLNormalizesNodePayloads(t *testing.T) {
+	subBase64Node := "ss://" + base64.StdEncoding.EncodeToString([]byte("aes-128-gcm:password@sub-ss.example.com:8388")) + "#from-sub-base64"
+	subBase64Payload := base64.StdEncoding.EncodeToString([]byte(subBase64Node + "\n"))
+	yamlPayload := "proxies:\n  - name: yaml-sub-node\n    type: socks5\n    server: yaml-socks.example.com\n    port: 1080\nproxy-groups: []\nrules: []\n"
+
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/sub-base64":
+			fmt.Fprint(w, subBase64Payload)
+		case "/sub-yaml":
+			fmt.Fprint(w, yamlPayload)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer ts.Close()
+
+	f := New(5*time.Second, 1)
+	p := profile.DefaultProfile()
+	p.Subscriptions = []profile.SourceRef{{URL: ts.URL + "/sub-base64"}, {URL: ts.URL + "/sub-yaml"}}
+
+	res := f.LoadSubscriptions(context.Background(), p, filepath.Join(t.TempDir(), "profile.yaml"))
+	if len(res) != 2 {
+		t.Fatalf("unexpected result size: %d", len(res))
+	}
+	for i, result := range res {
+		if result.Err != nil {
+			t.Fatalf("subscription %d failed: %v", i, result.Err)
+		}
+		if !strings.Contains(string(result.Data), "proxy-groups:") {
+			t.Fatalf("subscription %d missing normalized proxy-groups", i)
+		}
+		if !strings.Contains(string(result.Data), "rules:") {
+			t.Fatalf("subscription %d missing normalized rules", i)
+		}
+	}
+	if !strings.Contains(string(res[0].Data), "name: from-sub-base64") {
+		t.Fatalf("missing normalized node from base64 URL subscription")
+	}
+	if !strings.Contains(string(res[1].Data), "name: yaml-sub-node") {
+		t.Fatalf("missing normalized node from yaml URL subscription")
+	}
+}
