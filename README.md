@@ -4,6 +4,7 @@
 
 Input:
 - one or more subscriptions (URL or local file)
+- subscription URLs may return Mihomo YAML, node URI lines, or base64-encoded node URI lines
 - or one or more local `nodes.txt` sources (`nodesFile`)
 - override patches (YAML merge / JSON patch)
 - optional template
@@ -55,6 +56,14 @@ subscriptions:
   - url: https://example.com/sub?token=***
   - file: ./subscription.yaml
   - nodesFile: ./nodes.txt
+```
+
+`subscriptions[].url` accepts:
+- Mihomo/Clash YAML subscriptions
+- plain node URI line subscriptions
+- base64-encoded node URI line subscriptions
+
+```yaml
 
 template: ./base-template.yaml
 
@@ -211,5 +220,5 @@ See `docs/research.md` for upstream references and license-risk mitigation.
 
 ## Release Notes
 
-- Current release notes draft: `docs/releases/v0.2.1.md`
+- Current release notes draft: `docs/releases/v0.2.2.md`
 - Release checklist: `docs/releases/checklist.md`
