@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ign1x/mihomo-config-builder/internal/configfile"
 	"github.com/ign1x/mihomo-config-builder/internal/profile"
 )
 
@@ -292,16 +293,17 @@ func TestLoadSubscriptionsFromNodesFileWithSubscriptionLinks(t *testing.T) {
 		t.Fatalf("unexpected nodes load error: %v", res[0].Err)
 	}
 
+	proxyNames := mustProxyNames(t, res[0].Data)
+	if !containsName(proxyNames, "direct-node") {
+		t.Fatalf("missing direct node: %v", proxyNames)
+	}
+	if !containsName(proxyNames, "from-sub-base64 🇭🇰HK") {
+		t.Fatalf("missing node from base64 subscription link: %v", proxyNames)
+	}
+	if !containsName(proxyNames, "yaml-sub-node 🇯🇵JP") {
+		t.Fatalf("missing node from yaml subscription link: %v", proxyNames)
+	}
 	out := string(res[0].Data)
-	if !strings.Contains(out, "name: direct-node") {
-		t.Fatalf("missing direct node")
-	}
-	if !strings.Contains(out, "name: from-sub-base64 HK") {
-		t.Fatalf("missing node from base64 subscription link")
-	}
-	if !strings.Contains(out, "name: yaml-sub-node JP") {
-		t.Fatalf("missing node from yaml subscription link")
-	}
 	if strings.Contains(out, "type: http") {
 		t.Fatalf("subscription links should not be treated as http proxy nodes")
 	}
@@ -364,13 +366,91 @@ func TestLoadSubscriptionsFromURLNormalizesNodePayloads(t *testing.T) {
 	if !strings.Contains(string(res[0].Data), "name: 'NODE-k1-风萧萧'") {
 		t.Fatalf("missing normalized node from base64 URL subscription: %s", string(res[0].Data))
 	}
-	if !strings.Contains(string(res[1].Data), "name: HK-k1-ouo") {
-		t.Fatalf("missing normalized HK node from yaml URL subscription: %s", string(res[1].Data))
+	proxyNames := mustProxyNames(t, res[1].Data)
+	if !containsName(proxyNames, "🇭🇰HK-k1-ouo") {
+		t.Fatalf("missing normalized HK node from yaml URL subscription: %v", proxyNames)
 	}
-	if !strings.Contains(string(res[1].Data), "name: 'JP专-k1-ouo'") {
-		t.Fatalf("missing normalized dedicated JP node from yaml URL subscription: %s", string(res[1].Data))
+	if !containsName(proxyNames, "🇯🇵JP专-k1-ouo") {
+		t.Fatalf("missing normalized dedicated JP node from yaml URL subscription: %v", proxyNames)
 	}
-	if !strings.Contains(string(res[1].Data), "- HK-k1-ouo") || !strings.Contains(string(res[1].Data), "- 'JP专-k1-ouo'") {
-		t.Fatalf("proxy-group references were not rewritten: %s", string(res[1].Data))
+	groupRefs := mustProxyGroupRefs(t, res[1].Data, "PROXY")
+	if !containsName(groupRefs, "🇭🇰HK-k1-ouo") || !containsName(groupRefs, "🇯🇵JP专-k1-ouo") {
+		t.Fatalf("proxy-group references were not rewritten: %v", groupRefs)
 	}
+}
+
+func mustProxyNames(t *testing.T, data []byte) []string {
+	t.Helper()
+
+	cfg, err := configfile.DecodeYAMLBytes(data)
+	if err != nil {
+		t.Fatalf("decode yaml: %v", err)
+	}
+	rawProxies, ok := cfg["proxies"].([]any)
+	if !ok {
+		t.Fatalf("missing proxies section")
+	}
+
+	names := make([]string, 0, len(rawProxies))
+	for i, rawProxy := range rawProxies {
+		proxy, ok := rawProxy.(map[string]any)
+		if !ok {
+			t.Fatalf("proxies[%d] must be mapping", i)
+		}
+		name, ok := proxy["name"].(string)
+		if !ok {
+			t.Fatalf("proxies[%d].name must be string", i)
+		}
+		names = append(names, name)
+	}
+	return names
+}
+
+func mustProxyGroupRefs(t *testing.T, data []byte, groupName string) []string {
+	t.Helper()
+
+	cfg, err := configfile.DecodeYAMLBytes(data)
+	if err != nil {
+		t.Fatalf("decode yaml: %v", err)
+	}
+	rawGroups, ok := cfg["proxy-groups"].([]any)
+	if !ok {
+		t.Fatalf("missing proxy-groups section")
+	}
+
+	for i, rawGroup := range rawGroups {
+		group, ok := rawGroup.(map[string]any)
+		if !ok {
+			t.Fatalf("proxy-groups[%d] must be mapping", i)
+		}
+		name, _ := group["name"].(string)
+		if name != groupName {
+			continue
+		}
+		rawRefs, ok := group["proxies"].([]any)
+		if !ok {
+			t.Fatalf("proxy-groups[%d].proxies must be sequence", i)
+		}
+		refs := make([]string, 0, len(rawRefs))
+		for j, rawRef := range rawRefs {
+			ref, ok := rawRef.(string)
+			if !ok {
+				t.Fatalf("proxy-groups[%d].proxies[%d] must be string", i, j)
+			}
+			refs = append(refs, ref)
+		}
+		return refs
+	}
+
+	t.Fatalf("proxy-group %q not found", groupName)
+	return nil
+}
+
+func containsName(names []string, want string) bool {
+	for _, name := range names {
+		if name == want {
+			return true
+		}
+	}
+	return false
 }

@@ -475,9 +475,13 @@ func normalizeProxyNamesBySource(proxies []map[string]any, sourceLabel string) m
 	renameMap := map[string]string{}
 	for _, proxy := range proxies {
 		oldName, _ := proxy["name"].(string)
-		prefix := proxyRegionPrefix(oldName)
-		if prefix == "" {
-			prefix = "NODE"
+		region := proxyRegionLabel(oldName)
+		prefix := "NODE"
+		if region.Code != "" {
+			prefix = region.Code
+			if region.Flag != "" {
+				prefix = region.Flag + prefix
+			}
 		}
 		if isDedicatedProxyName(oldName) {
 			prefix += "专"
@@ -524,63 +528,68 @@ func rewriteProxyGroupRefs(cfg map[string]any, renameMap map[string]string) {
 	}
 }
 
-func proxyRegionPrefix(name string) string {
+type proxyRegion struct {
+	Code string
+	Flag string
+}
+
+func proxyRegionLabel(name string) proxyRegion {
 	raw := strings.TrimSpace(name)
 	tokens := uppercaseAlphaNumTokens(raw)
 
 	if strings.Contains(raw, "🇭🇰") || strings.Contains(raw, "香港") || hasToken(tokens, "HK") || (hasToken(tokens, "HONG") && hasToken(tokens, "KONG")) {
-		return "HK"
+		return proxyRegion{Code: "HK", Flag: "🇭🇰"}
 	}
 	if strings.Contains(raw, "🇯🇵") || strings.Contains(raw, "日本") || strings.Contains(raw, "东京") || strings.Contains(raw, "大阪") || hasToken(tokens, "JP") || hasToken(tokens, "JAPAN") {
-		return "JP"
+		return proxyRegion{Code: "JP", Flag: "🇯🇵"}
 	}
 	if strings.Contains(raw, "🇹🇼") || strings.Contains(raw, "台湾") || strings.Contains(raw, "台北") || hasToken(tokens, "TW") || hasToken(tokens, "TAIWAN") {
-		return "TW"
+		return proxyRegion{Code: "TW", Flag: "🇹🇼"}
 	}
 	if strings.Contains(raw, "🇸🇬") || strings.Contains(raw, "新加坡") || hasToken(tokens, "SG") || hasToken(tokens, "SINGAPORE") {
-		return "SG"
+		return proxyRegion{Code: "SG", Flag: "🇸🇬"}
 	}
 	if strings.Contains(raw, "🇰🇷") || strings.Contains(raw, "韩国") || strings.Contains(raw, "首尔") || hasToken(tokens, "KR") || hasToken(tokens, "KOREA") {
-		return "KR"
+		return proxyRegion{Code: "KR", Flag: "🇰🇷"}
 	}
 	if strings.Contains(raw, "🇻🇳") || strings.Contains(raw, "越南") || hasToken(tokens, "VN") || hasToken(tokens, "VIETNAM") {
-		return "VN"
+		return proxyRegion{Code: "VN", Flag: "🇻🇳"}
 	}
 	if strings.Contains(raw, "🇹🇭") || strings.Contains(raw, "泰国") || hasToken(tokens, "TH") || hasToken(tokens, "THAILAND") {
-		return "TH"
+		return proxyRegion{Code: "TH", Flag: "🇹🇭"}
 	}
 	if strings.Contains(raw, "🇵🇭") || strings.Contains(raw, "菲律宾") || hasToken(tokens, "PH") || hasToken(tokens, "PHILIPPINES") {
-		return "PH"
+		return proxyRegion{Code: "PH", Flag: "🇵🇭"}
 	}
 	if strings.Contains(raw, "🇮🇳") || strings.Contains(raw, "印度") || hasToken(tokens, "IN") || hasToken(tokens, "INDIA") {
-		return "IN"
+		return proxyRegion{Code: "IN", Flag: "🇮🇳"}
 	}
 	if strings.Contains(raw, "🇺🇸") || strings.Contains(raw, "美国") || hasToken(tokens, "US") || hasToken(tokens, "USA") || hasToken(tokens, "AMERICA") || (hasToken(tokens, "UNITED") && hasToken(tokens, "STATES")) {
-		return "US"
+		return proxyRegion{Code: "US", Flag: "🇺🇸"}
 	}
 	if strings.Contains(raw, "🇬🇧") || strings.Contains(raw, "英国") || hasToken(tokens, "UK") || (hasToken(tokens, "UNITED") && hasToken(tokens, "KINGDOM")) {
-		return "UK"
+		return proxyRegion{Code: "UK", Flag: "🇬🇧"}
 	}
 	if strings.Contains(raw, "🇩🇪") || strings.Contains(raw, "德国") || hasToken(tokens, "DE") || hasToken(tokens, "GERMANY") {
-		return "DE"
+		return proxyRegion{Code: "DE", Flag: "🇩🇪"}
 	}
 	if strings.Contains(raw, "🇫🇷") || strings.Contains(raw, "法国") || hasToken(tokens, "FR") || hasToken(tokens, "FRANCE") {
-		return "FR"
+		return proxyRegion{Code: "FR", Flag: "🇫🇷"}
 	}
 	if strings.Contains(raw, "🇳🇱") || strings.Contains(raw, "荷兰") || hasToken(tokens, "NL") || hasToken(tokens, "NETHERLANDS") {
-		return "NL"
+		return proxyRegion{Code: "NL", Flag: "🇳🇱"}
 	}
 	if strings.Contains(raw, "🇨🇦") || strings.Contains(raw, "加拿大") || hasToken(tokens, "CA") || hasToken(tokens, "CANADA") {
-		return "CA"
+		return proxyRegion{Code: "CA", Flag: "🇨🇦"}
 	}
 	if strings.Contains(raw, "🇷🇺") || strings.Contains(raw, "俄罗斯") || hasToken(tokens, "RU") || hasToken(tokens, "RUSSIA") {
-		return "RU"
+		return proxyRegion{Code: "RU", Flag: "🇷🇺"}
 	}
 	if strings.Contains(raw, "欧洲") || hasToken(tokens, "EU") || hasToken(tokens, "EUROPE") {
-		return "EU"
+		return proxyRegion{Code: "EU", Flag: "🇪🇺"}
 	}
 
-	return ""
+	return proxyRegion{}
 }
 
 func isDedicatedProxyName(name string) bool {
@@ -687,6 +696,7 @@ func appendProxyNameSuffix(proxies []map[string]any, suffix string) {
 	if trimmedSuffix == "" {
 		return
 	}
+	displaySuffix := subscriptionSuffixDisplayLabel(trimmedSuffix)
 	for _, proxy := range proxies {
 		baseName := ""
 		if rawName, ok := proxy["name"].(string); ok {
@@ -695,8 +705,20 @@ func appendProxyNameSuffix(proxies []map[string]any, suffix string) {
 		if baseName == "" {
 			baseName = "NODE"
 		}
-		proxy["name"] = baseName + " " + trimmedSuffix
+		proxy["name"] = baseName + " " + displaySuffix
 	}
+}
+
+func subscriptionSuffixDisplayLabel(suffix string) string {
+	trimmed := strings.TrimSpace(suffix)
+	if trimmed == "" {
+		return ""
+	}
+	region := proxyRegionLabel(trimmed)
+	if region.Flag == "" || strings.Contains(trimmed, region.Flag) {
+		return trimmed
+	}
+	return region.Flag + trimmed
 }
 
 func compactWhitespace(s string) string {
