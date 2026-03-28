@@ -63,6 +63,65 @@ func TestLoadURLRetry(t *testing.T) {
 	}
 }
 
+func TestLoadURLUsesCompatibilityHeadersByDefault(t *testing.T) {
+	requestCount := 0
+	seenUserAgents := make([]string, 0, 1)
+	seenAccepts := make([]string, 0, 1)
+
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestCount++
+		seenUserAgents = append(seenUserAgents, r.UserAgent())
+		seenAccepts = append(seenAccepts, r.Header.Get("Accept"))
+
+		if r.UserAgent() == "Clash-verge/v2.0.0" && r.Header.Get("Accept") == "application/json,text/plain,*/*" {
+			fmt.Fprint(w, "proxies: []\nproxy-groups: []\nrules: []\n")
+			return
+		}
+
+		http.Error(w, `{"message":"401 Unauthorized"}`, http.StatusForbidden)
+	}))
+	defer ts.Close()
+
+	f := New(3*time.Second, 0)
+	got, err := f.loadURL(context.Background(), ts.URL)
+	if err != nil {
+		t.Fatalf("expected compatibility fallback success, got: %v", err)
+	}
+	if string(got) != "proxies: []\nproxy-groups: []\nrules: []\n" {
+		t.Fatalf("unexpected response body: %q", string(got))
+	}
+	if requestCount != 1 {
+		t.Fatalf("expected 1 request, got %d", requestCount)
+	}
+	if len(seenUserAgents) != 1 || seenUserAgents[0] != "Clash-verge/v2.0.0" {
+		t.Fatalf("unexpected user agent sequence: %#v", seenUserAgents)
+	}
+	if len(seenAccepts) != 1 || seenAccepts[0] != "application/json,text/plain,*/*" {
+		t.Fatalf("unexpected accept headers: %#v", seenAccepts)
+	}
+}
+
+func TestLoadURLUsesConfiguredUserAgent(t *testing.T) {
+	var seenUserAgent string
+
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		seenUserAgent = r.UserAgent()
+		fmt.Fprint(w, "proxies: []\nproxy-groups: []\nrules: []\n")
+	}))
+	defer ts.Close()
+
+	f, err := NewWithOptions(3*time.Second, 0, "custom-agent/1.0", "")
+	if err != nil {
+		t.Fatalf("new fetcher: %v", err)
+	}
+	if _, err := f.loadURL(context.Background(), ts.URL); err != nil {
+		t.Fatalf("load url: %v", err)
+	}
+	if seenUserAgent != "custom-agent/1.0" {
+		t.Fatalf("unexpected user agent: %q", seenUserAgent)
+	}
+}
+
 func TestLoadSubscriptionsFromNodesFile(t *testing.T) {
 	vmessJSON := `{"v":"2","ps":"vmess-node","add":"vm.example.com","port":"443","id":"11111111-1111-1111-1111-111111111111","aid":"0","net":"ws","host":"ws.example.com","path":"/ws","tls":"tls"}`
 	vmessLine := "vmess://" + base64.StdEncoding.EncodeToString([]byte(vmessJSON))
@@ -251,7 +310,25 @@ func TestLoadSubscriptionsFromNodesFileWithSubscriptionLinks(t *testing.T) {
 func TestLoadSubscriptionsFromURLNormalizesNodePayloads(t *testing.T) {
 	subBase64Node := "ss://" + base64.StdEncoding.EncodeToString([]byte("aes-128-gcm:password@sub-ss.example.com:8388")) + "#from-sub-base64"
 	subBase64Payload := base64.StdEncoding.EncodeToString([]byte(subBase64Node + "\n"))
-	yamlPayload := "proxies:\n  - name: yaml-sub-node\n    type: socks5\n    server: yaml-socks.example.com\n    port: 1080\nproxy-groups: []\nrules: []\n"
+	yamlPayload := strings.Join([]string{
+		"proxies:",
+		"  - name: 🇭🇰HK-2-@walle77佬赞助",
+		"    type: socks5",
+		"    server: hk-socks.example.com",
+		"    port: 1080",
+		"  - name: IEPL-🇯🇵JP-4-5x倍率",
+		"    type: socks5",
+		"    server: jp-socks.example.com",
+		"    port: 1081",
+		"proxy-groups:",
+		"  - name: PROXY",
+		"    type: select",
+		"    proxies:",
+		"      - 🇭🇰HK-2-@walle77佬赞助",
+		"      - IEPL-🇯🇵JP-4-5x倍率",
+		"rules:",
+		"  - MATCH,PROXY",
+	}, "\n") + "\n"
 
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
@@ -267,7 +344,7 @@ func TestLoadSubscriptionsFromURLNormalizesNodePayloads(t *testing.T) {
 
 	f := New(5*time.Second, 1)
 	p := profile.DefaultProfile()
-	p.Subscriptions = []profile.SourceRef{{URL: ts.URL + "/sub-base64"}, {URL: ts.URL + "/sub-yaml"}}
+	p.Subscriptions = []profile.SourceRef{{URL: ts.URL + "/sub-base64#风萧萧"}, {URL: ts.URL + "/sub-yaml#ouo"}}
 
 	res := f.LoadSubscriptions(context.Background(), p, filepath.Join(t.TempDir(), "profile.yaml"))
 	if len(res) != 2 {
@@ -284,10 +361,16 @@ func TestLoadSubscriptionsFromURLNormalizesNodePayloads(t *testing.T) {
 			t.Fatalf("subscription %d missing normalized rules", i)
 		}
 	}
-	if !strings.Contains(string(res[0].Data), "name: from-sub-base64") {
-		t.Fatalf("missing normalized node from base64 URL subscription")
+	if !strings.Contains(string(res[0].Data), "name: 'NODE-k1-风萧萧'") {
+		t.Fatalf("missing normalized node from base64 URL subscription: %s", string(res[0].Data))
 	}
-	if !strings.Contains(string(res[1].Data), "name: yaml-sub-node") {
-		t.Fatalf("missing normalized node from yaml URL subscription")
+	if !strings.Contains(string(res[1].Data), "name: HK-k1-ouo") {
+		t.Fatalf("missing normalized HK node from yaml URL subscription: %s", string(res[1].Data))
+	}
+	if !strings.Contains(string(res[1].Data), "name: 'JP专-k1-ouo'") {
+		t.Fatalf("missing normalized dedicated JP node from yaml URL subscription: %s", string(res[1].Data))
+	}
+	if !strings.Contains(string(res[1].Data), "- HK-k1-ouo") || !strings.Contains(string(res[1].Data), "- 'JP专-k1-ouo'") {
+		t.Fatalf("proxy-group references were not rewritten: %s", string(res[1].Data))
 	}
 }

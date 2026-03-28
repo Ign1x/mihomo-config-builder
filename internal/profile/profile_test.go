@@ -24,6 +24,8 @@ fetch:
   retries: 2
   concurrency: 2
   ignoreFailed: true
+  userAgent: custom-agent/1.0
+  proxyURL: http://127.0.0.1:7890
 policy:
   gamePlatformDirect: [steam]
 hooks:
@@ -41,6 +43,9 @@ ruleTemplates: [cn-direct]
 	}
 	if p.Fetch.TimeoutSeconds != 10 || p.Fetch.Retries != 2 || p.Fetch.Concurrency != 2 {
 		t.Fatalf("unexpected fetch config: %+v", p.Fetch)
+	}
+	if p.Fetch.UserAgent != "custom-agent/1.0" || p.Fetch.ProxyURL != "http://127.0.0.1:7890" {
+		t.Fatalf("unexpected fetch transport config: %+v", p.Fetch)
 	}
 	if p.Hooks.JS.TimeoutMs != 500 {
 		t.Fatalf("unexpected hooks timeout: %d", p.Hooks.JS.TimeoutMs)
@@ -84,5 +89,17 @@ hooks:
 `))
 	if err == nil {
 		t.Fatalf("expected error for negative timeout")
+	}
+}
+
+func TestValidateFetchProxyURL(t *testing.T) {
+	_, err := Read(strings.NewReader(`
+subscriptions:
+  - file: ./a.yaml
+fetch:
+  proxyURL: ://bad
+`))
+	if err == nil {
+		t.Fatalf("expected error for invalid proxyURL")
 	}
 }

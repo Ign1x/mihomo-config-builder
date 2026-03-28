@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/url"
 	"os"
 
 	"gopkg.in/yaml.v3"
@@ -49,10 +50,12 @@ type OutputOptions struct {
 }
 
 type FetchOptions struct {
-	TimeoutSeconds int  `yaml:"timeoutSeconds" json:"timeoutSeconds"`
-	Retries        int  `yaml:"retries" json:"retries"`
-	Concurrency    int  `yaml:"concurrency" json:"concurrency"`
-	IgnoreFailed   bool `yaml:"ignoreFailed" json:"ignoreFailed"`
+	TimeoutSeconds int    `yaml:"timeoutSeconds" json:"timeoutSeconds"`
+	Retries        int    `yaml:"retries" json:"retries"`
+	Concurrency    int    `yaml:"concurrency" json:"concurrency"`
+	IgnoreFailed   bool   `yaml:"ignoreFailed" json:"ignoreFailed"`
+	UserAgent      string `yaml:"userAgent,omitempty" json:"userAgent,omitempty"`
+	ProxyURL       string `yaml:"proxyURL,omitempty" json:"proxyURL,omitempty"`
 }
 
 type PolicyDirectives struct {
@@ -141,6 +144,11 @@ func (p Profile) Validate() error {
 	}
 	if p.Fetch.Concurrency <= 0 {
 		return errors.New("fetch.concurrency must be > 0")
+	}
+	if p.Fetch.ProxyURL != "" {
+		if _, err := url.Parse(p.Fetch.ProxyURL); err != nil {
+			return fmt.Errorf("fetch.proxyURL is invalid: %w", err)
+		}
 	}
 	if p.Hooks.JS.TimeoutMs < 0 {
 		return errors.New("hooks.js.timeoutMs must be >= 0")

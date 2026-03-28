@@ -31,18 +31,49 @@ type Result struct {
 }
 
 type Fetcher struct {
-	httpClient *http.Client
-	retries    int
+	httpClient     *http.Client
+	retries        int
+	defaultHeaders http.Header
 }
 
+const defaultRemoteUserAgent = "Clash-verge/v2.0.0"
+
 func New(timeout time.Duration, retries int) *Fetcher {
+	f, err := NewWithOptions(timeout, retries, "", "")
+	if err != nil {
+		panic(err)
+	}
+	return f
+}
+
+func NewWithOptions(timeout time.Duration, retries int, userAgent string, proxyURL string) (*Fetcher, error) {
 	if timeout <= 0 {
 		timeout = 15 * time.Second
 	}
-	return &Fetcher{
-		httpClient: &http.Client{Timeout: timeout},
-		retries:    retries,
+	if strings.TrimSpace(userAgent) == "" {
+		userAgent = defaultRemoteUserAgent
 	}
+
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	if strings.TrimSpace(proxyURL) != "" {
+		proxy, err := url.Parse(proxyURL)
+		if err != nil {
+			return nil, fmt.Errorf("parse proxy url: %w", err)
+		}
+		transport.Proxy = http.ProxyURL(proxy)
+	}
+
+	return &Fetcher{
+		httpClient: &http.Client{
+			Timeout:   timeout,
+			Transport: transport,
+		},
+		retries: retries,
+		defaultHeaders: http.Header{
+			"User-Agent": []string{userAgent},
+			"Accept":     []string{"application/json,text/plain,*/*"},
+		},
+	}, nil
 }
 
 func (f *Fetcher) LoadTemplate(ctx context.Context, template string, profilePath string) ([]byte, error) {
@@ -112,13 +143,14 @@ func (f *Fetcher) loadOne(ctx context.Context, ref profile.SourceRef, profilePat
 		return converted, nil
 	}
 	if ref.URL != "" {
-		b, err := f.loadURL(ctx, ref.URL)
+		fetchURL, sourceLabel := splitSubscriptionURLMetadata(ref.URL)
+		b, err := f.loadURL(ctx, fetchURL)
 		if err != nil {
-			return nil, fmt.Errorf("fetch subscription url %s: %w", util.RedactURL(ref.URL), err)
+			return nil, fmt.Errorf("fetch subscription url %s: %w", util.RedactURL(fetchURL), err)
 		}
-		normalized, err := normalizeSubscriptionPayload(b)
+		normalized, err := normalizeSubscriptionPayload(b, sourceLabel)
 		if err != nil {
-			return nil, fmt.Errorf("parse subscription content from %s: %w", util.RedactURL(ref.URL), err)
+			return nil, fmt.Errorf("parse subscription content from %s: %w", util.RedactURL(fetchURL), err)
 		}
 		return normalized, nil
 	}
@@ -136,43 +168,76 @@ func (f *Fetcher) loadOne(ctx context.Context, ref profile.SourceRef, profilePat
 func (f *Fetcher) loadURL(ctx context.Context, rawURL string) ([]byte, error) {
 	var lastErr error
 	for attempt := 0; attempt <= f.retries; attempt++ {
-		req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
-		if err != nil {
-			return nil, fmt.Errorf("new request: %w", err)
+		data, statusCode, err := f.loadURLWithHeaders(ctx, rawURL, f.defaultHeaders)
+		if err == nil {
+			return data, nil
 		}
-		resp, err := f.httpClient.Do(req)
-		if err != nil {
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+		lastErr = err
+
+		shouldRetry := true
+		if isCompatibilityRetryStatus(statusCode) {
+			shouldRetry = false
+			data, compatStatus, compatErr := f.loadURLWithHeaders(ctx, rawURL, nil)
+			if compatErr == nil {
+				return data, nil
+			}
 			if ctx.Err() != nil {
 				return nil, ctx.Err()
 			}
-			lastErr = err
-			continue
+			lastErr = compatErr
+			if !isCompatibilityRetryStatus(compatStatus) {
+				shouldRetry = true
+			}
 		}
-
-		data, readErr := io.ReadAll(resp.Body)
-		closeErr := resp.Body.Close()
-		if readErr != nil {
-			lastErr = readErr
-			continue
+		if !shouldRetry {
+			break
 		}
-		if closeErr != nil {
-			lastErr = closeErr
-			continue
-		}
-		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-			lastErr = fmt.Errorf("http status %d", resp.StatusCode)
-			continue
-		}
-		if len(data) == 0 {
-			lastErr = errors.New("empty response body")
-			continue
-		}
-		return data, nil
 	}
 	if lastErr == nil {
 		lastErr = errors.New("unknown network error")
 	}
 	return nil, lastErr
+}
+
+func (f *Fetcher) loadURLWithHeaders(ctx context.Context, rawURL string, headers http.Header) ([]byte, int, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
+	if err != nil {
+		return nil, 0, fmt.Errorf("new request: %w", err)
+	}
+	if headers != nil {
+		req.Header = headers.Clone()
+	}
+
+	resp, err := f.httpClient.Do(req)
+	if err != nil {
+		if ctx.Err() != nil {
+			return nil, 0, ctx.Err()
+		}
+		return nil, 0, err
+	}
+
+	data, readErr := io.ReadAll(resp.Body)
+	closeErr := resp.Body.Close()
+	if readErr != nil {
+		return nil, resp.StatusCode, readErr
+	}
+	if closeErr != nil {
+		return nil, resp.StatusCode, closeErr
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, resp.StatusCode, fmt.Errorf("http status %d", resp.StatusCode)
+	}
+	if len(data) == 0 {
+		return nil, resp.StatusCode, errors.New("empty response body")
+	}
+	return data, resp.StatusCode, nil
+}
+
+func isCompatibilityRetryStatus(statusCode int) bool {
+	return statusCode == http.StatusUnauthorized || statusCode == http.StatusForbidden
 }
 
 func isHTTP(s string) bool {
@@ -344,21 +409,199 @@ func (f *Fetcher) loadSubscriptionURLProxies(ctx context.Context, rawURL string)
 	return proxies, nil
 }
 
-func normalizeSubscriptionPayload(data []byte) ([]byte, error) {
+func normalizeSubscriptionPayload(data []byte, sourceLabel string) ([]byte, error) {
 	trimmed := strings.TrimSpace(string(data))
 	if trimmed == "" {
 		return nil, errors.New("subscription content is empty")
 	}
 
-	if _, err := configfile.DecodeYAMLBytes([]byte(trimmed)); err == nil {
-		return []byte(trimmed), nil
+	if cfg, err := configfile.DecodeYAMLBytes([]byte(trimmed)); err == nil {
+		if err := normalizeSubscriptionConfigProxyNames(cfg, sourceLabel); err != nil {
+			return nil, err
+		}
+		return configfile.MarshalYAML(cfg, true, true)
 	}
 
 	proxies, err := parseSubscriptionPayloadProxies([]byte(trimmed))
 	if err != nil {
 		return nil, err
 	}
+	normalizeProxyNamesBySource(proxies, sourceLabel)
 	return buildSubscriptionYAMLFromProxies(proxies)
+}
+
+func splitSubscriptionURLMetadata(rawURL string) (fetchURL string, sourceLabel string) {
+	u, err := url.Parse(strings.TrimSpace(rawURL))
+	if err != nil {
+		return rawURL, ""
+	}
+	sourceLabel = decodeNodeNameFragment(u.Fragment)
+	u.Fragment = ""
+	return u.String(), sourceLabel
+}
+
+func normalizeSubscriptionConfigProxyNames(cfg map[string]any, sourceLabel string) error {
+	trimmedLabel := strings.TrimSpace(sourceLabel)
+	if trimmedLabel == "" {
+		return nil
+	}
+
+	rawProxies, ok := cfg["proxies"].([]any)
+	if !ok || len(rawProxies) == 0 {
+		return nil
+	}
+
+	proxies := make([]map[string]any, 0, len(rawProxies))
+	for i, rawProxy := range rawProxies {
+		proxy, ok := rawProxy.(map[string]any)
+		if !ok {
+			return fmt.Errorf("proxies[%d] must be mapping", i)
+		}
+		proxies = append(proxies, proxy)
+	}
+
+	renameMap := normalizeProxyNamesBySource(proxies, trimmedLabel)
+	rewriteProxyGroupRefs(cfg, renameMap)
+	return nil
+}
+
+func normalizeProxyNamesBySource(proxies []map[string]any, sourceLabel string) map[string]string {
+	trimmedLabel := strings.TrimSpace(sourceLabel)
+	if trimmedLabel == "" {
+		return map[string]string{}
+	}
+
+	counters := map[string]int{}
+	renameMap := map[string]string{}
+	for _, proxy := range proxies {
+		oldName, _ := proxy["name"].(string)
+		prefix := proxyRegionPrefix(oldName)
+		if prefix == "" {
+			prefix = "NODE"
+		}
+		if isDedicatedProxyName(oldName) {
+			prefix += "专"
+		}
+		counters[prefix]++
+		newName := fmt.Sprintf("%s-k%d-%s", prefix, counters[prefix], trimmedLabel)
+		proxy["name"] = newName
+		if strings.TrimSpace(oldName) != "" {
+			if _, exists := renameMap[oldName]; !exists {
+				renameMap[oldName] = newName
+			}
+		}
+	}
+	return renameMap
+}
+
+func rewriteProxyGroupRefs(cfg map[string]any, renameMap map[string]string) {
+	if len(renameMap) == 0 {
+		return
+	}
+	groups, ok := cfg["proxy-groups"].([]any)
+	if !ok {
+		return
+	}
+	for _, rawGroup := range groups {
+		group, ok := rawGroup.(map[string]any)
+		if !ok {
+			continue
+		}
+		refs, ok := group["proxies"].([]any)
+		if !ok {
+			continue
+		}
+		for i, rawRef := range refs {
+			name, ok := rawRef.(string)
+			if !ok {
+				continue
+			}
+			if renamed, exists := renameMap[name]; exists {
+				refs[i] = renamed
+			}
+		}
+		group["proxies"] = refs
+	}
+}
+
+func proxyRegionPrefix(name string) string {
+	raw := strings.TrimSpace(name)
+	tokens := uppercaseAlphaNumTokens(raw)
+
+	if strings.Contains(raw, "🇭🇰") || strings.Contains(raw, "香港") || hasToken(tokens, "HK") || (hasToken(tokens, "HONG") && hasToken(tokens, "KONG")) {
+		return "HK"
+	}
+	if strings.Contains(raw, "🇯🇵") || strings.Contains(raw, "日本") || strings.Contains(raw, "东京") || strings.Contains(raw, "大阪") || hasToken(tokens, "JP") || hasToken(tokens, "JAPAN") {
+		return "JP"
+	}
+	if strings.Contains(raw, "🇹🇼") || strings.Contains(raw, "台湾") || strings.Contains(raw, "台北") || hasToken(tokens, "TW") || hasToken(tokens, "TAIWAN") {
+		return "TW"
+	}
+	if strings.Contains(raw, "🇸🇬") || strings.Contains(raw, "新加坡") || hasToken(tokens, "SG") || hasToken(tokens, "SINGAPORE") {
+		return "SG"
+	}
+	if strings.Contains(raw, "🇰🇷") || strings.Contains(raw, "韩国") || strings.Contains(raw, "首尔") || hasToken(tokens, "KR") || hasToken(tokens, "KOREA") {
+		return "KR"
+	}
+	if strings.Contains(raw, "🇻🇳") || strings.Contains(raw, "越南") || hasToken(tokens, "VN") || hasToken(tokens, "VIETNAM") {
+		return "VN"
+	}
+	if strings.Contains(raw, "🇹🇭") || strings.Contains(raw, "泰国") || hasToken(tokens, "TH") || hasToken(tokens, "THAILAND") {
+		return "TH"
+	}
+	if strings.Contains(raw, "🇵🇭") || strings.Contains(raw, "菲律宾") || hasToken(tokens, "PH") || hasToken(tokens, "PHILIPPINES") {
+		return "PH"
+	}
+	if strings.Contains(raw, "🇮🇳") || strings.Contains(raw, "印度") || hasToken(tokens, "IN") || hasToken(tokens, "INDIA") {
+		return "IN"
+	}
+	if strings.Contains(raw, "🇺🇸") || strings.Contains(raw, "美国") || hasToken(tokens, "US") || hasToken(tokens, "USA") || hasToken(tokens, "AMERICA") || (hasToken(tokens, "UNITED") && hasToken(tokens, "STATES")) {
+		return "US"
+	}
+	if strings.Contains(raw, "🇬🇧") || strings.Contains(raw, "英国") || hasToken(tokens, "UK") || (hasToken(tokens, "UNITED") && hasToken(tokens, "KINGDOM")) {
+		return "UK"
+	}
+	if strings.Contains(raw, "🇩🇪") || strings.Contains(raw, "德国") || hasToken(tokens, "DE") || hasToken(tokens, "GERMANY") {
+		return "DE"
+	}
+	if strings.Contains(raw, "🇫🇷") || strings.Contains(raw, "法国") || hasToken(tokens, "FR") || hasToken(tokens, "FRANCE") {
+		return "FR"
+	}
+	if strings.Contains(raw, "🇳🇱") || strings.Contains(raw, "荷兰") || hasToken(tokens, "NL") || hasToken(tokens, "NETHERLANDS") {
+		return "NL"
+	}
+	if strings.Contains(raw, "🇨🇦") || strings.Contains(raw, "加拿大") || hasToken(tokens, "CA") || hasToken(tokens, "CANADA") {
+		return "CA"
+	}
+	if strings.Contains(raw, "🇷🇺") || strings.Contains(raw, "俄罗斯") || hasToken(tokens, "RU") || hasToken(tokens, "RUSSIA") {
+		return "RU"
+	}
+	if strings.Contains(raw, "欧洲") || hasToken(tokens, "EU") || hasToken(tokens, "EUROPE") {
+		return "EU"
+	}
+
+	return ""
+}
+
+func isDedicatedProxyName(name string) bool {
+	upper := strings.ToUpper(strings.TrimSpace(name))
+	return strings.Contains(upper, "IEPL") || strings.Contains(upper, "IPLC") || strings.Contains(name, "专线") || strings.Contains(name, "专用")
+}
+
+func uppercaseAlphaNumTokens(value string) []string {
+	parts := strings.FieldsFunc(strings.ToUpper(value), func(r rune) bool {
+		return !((r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9'))
+	})
+	return parts
+}
+
+func hasToken(tokens []string, want string) bool {
+	for _, token := range tokens {
+		if token == want {
+			return true
+		}
+	}
+	return false
 }
 
 func parseSubscriptionPayloadProxies(data []byte) ([]map[string]any, error) {

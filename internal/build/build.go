@@ -24,7 +24,15 @@ type Result struct {
 }
 
 func Run(ctx context.Context, p profile.Profile, profilePath string, logger *logging.Logger) (Result, error) {
-	fetcher := source.New(time.Duration(p.Fetch.TimeoutSeconds)*time.Second, p.Fetch.Retries)
+	fetcher, err := source.NewWithOptions(
+		time.Duration(p.Fetch.TimeoutSeconds)*time.Second,
+		p.Fetch.Retries,
+		p.Fetch.UserAgent,
+		p.Fetch.ProxyURL,
+	)
+	if err != nil {
+		return Result{}, err
+	}
 
 	var cfg map[string]any
 	if p.Template != "" {

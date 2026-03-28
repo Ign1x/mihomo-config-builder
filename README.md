@@ -104,6 +104,10 @@ fetch:
   retries: 1
   concurrency: 4
   ignoreFailed: false
+  # optional: override remote subscription UA
+  userAgent: Clash-verge/v2.0.0
+  # optional: fetch through a specific proxy, e.g. local clash/mihomo mixed port
+  # proxyURL: http://127.0.0.1:7890
 
 policy:
   gamePlatformDirect:
@@ -158,6 +162,7 @@ Node URI schemes currently supported:
 ## Reliability and Security
 
 - timeout/retry/concurrency configurable in profile
+- remote fetch can override `fetch.userAgent` and `fetch.proxyURL` for subscription providers that gate by client identity or network path
 - optional degraded mode with `fetch.ignoreFailed`
 - URL tokens are redacted in network error messages
 - generated files and secret-like files are ignored via `.gitignore`
