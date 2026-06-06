@@ -787,6 +787,8 @@ func parseNodeLine(line string) (map[string]any, error) {
 		return parseVLess(normalized)
 	case "hysteria2", "hy2":
 		return parseHysteria2(normalized)
+	case "anytls":
+		return parseAnyTLS(normalized)
 	case "socks5", "socks", "sock5":
 		return parseSocks(normalized)
 	case "http", "https":
@@ -810,6 +812,43 @@ func parseURLHostPort(u *url.URL, scheme string) (string, int, error) {
 		return "", 0, fmt.Errorf("invalid %s port: %w", scheme, err)
 	}
 	return host, port, nil
+}
+
+func queryBool(query url.Values, keys ...string) bool {
+	for _, key := range keys {
+		value := strings.TrimSpace(query.Get(key))
+		if strings.EqualFold(value, "1") || strings.EqualFold(value, "true") {
+			return true
+		}
+	}
+	return false
+}
+
+func queryFirstNonEmpty(query url.Values, keys ...string) string {
+	for _, key := range keys {
+		value := strings.TrimSpace(query.Get(key))
+		if value != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+func queryCommaList(query url.Values, key string) []any {
+	raw := strings.TrimSpace(query.Get(key))
+	if raw == "" {
+		return nil
+	}
+
+	parts := strings.Split(raw, ",")
+	values := make([]any, 0, len(parts))
+	for _, part := range parts {
+		value := strings.TrimSpace(part)
+		if value != "" {
+			values = append(values, value)
+		}
+	}
+	return values
 }
 
 func parseSocks(raw string) (map[string]any, error) {
@@ -946,6 +985,78 @@ func parseHysteria2(raw string) (map[string]any, error) {
 	}
 	if obfsPassword := strings.TrimSpace(query.Get("obfs-password")); obfsPassword != "" {
 		out["obfs-password"] = obfsPassword
+	}
+
+	return out, nil
+}
+
+func parseAnyTLS(raw string) (map[string]any, error) {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return nil, fmt.Errorf("parse anytls url: %w", err)
+	}
+	host, port, err := parseURLHostPort(u, "anytls")
+	if err != nil {
+		return nil, err
+	}
+
+	name := decodeNodeNameFragment(u.Fragment)
+	if name == "" {
+		name = "AnyTLS"
+	}
+
+	query := u.Query()
+	password := ""
+	if u.User != nil {
+		password = strings.TrimSpace(u.User.Username())
+	}
+	if password == "" {
+		password = queryFirstNonEmpty(query, "password")
+	}
+	if password == "" {
+		return nil, errors.New("anytls password is required")
+	}
+
+	out := map[string]any{
+		"name":     name,
+		"type":     "anytls",
+		"server":   host,
+		"port":     port,
+		"password": password,
+		"udp":      true,
+	}
+
+	if sni := queryFirstNonEmpty(query, "sni", "servername"); sni != "" {
+		out["sni"] = sni
+	}
+	if fp := queryFirstNonEmpty(query, "fp", "client-fingerprint", "clientFingerprint"); fp != "" {
+		out["client-fingerprint"] = fp
+	}
+	if alpn := queryCommaList(query, "alpn"); len(alpn) > 0 {
+		out["alpn"] = alpn
+	}
+	if queryBool(query, "insecure", "allowInsecure", "skip-cert-verify") {
+		out["skip-cert-verify"] = true
+	}
+
+	intOptions := []struct {
+		keys []string
+		out  string
+	}{
+		{[]string{"idle-session-check-interval", "idleSessionCheckInterval"}, "idle-session-check-interval"},
+		{[]string{"idle-session-timeout", "idleSessionTimeout"}, "idle-session-timeout"},
+		{[]string{"min-idle-session", "minIdleSession"}, "min-idle-session"},
+	}
+	for _, option := range intOptions {
+		rawValue := queryFirstNonEmpty(query, option.keys...)
+		if rawValue == "" {
+			continue
+		}
+		value, err := strconv.Atoi(rawValue)
+		if err != nil {
+			return nil, fmt.Errorf("invalid anytls %s: %w", option.out, err)
+		}
+		out[option.out] = value
 	}
 
 	return out, nil

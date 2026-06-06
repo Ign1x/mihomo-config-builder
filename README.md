@@ -156,6 +156,7 @@ Node URI schemes currently supported:
 - `trojan://`
 - `vless://`
 - `hysteria2://` / `hy2://`
+- `anytls://`
 - `socks5://` / `socks://` / `sock5://`
 - `http://` / `https://`
 

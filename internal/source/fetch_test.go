@@ -139,7 +139,8 @@ func TestLoadSubscriptionsFromNodesFile(t *testing.T) {
 	vlessNode := "vless://22222222-2222-2222-2222-222222222222@vless.example.com:443?type=ws&security=tls&sni=vless.example.com&path=%2Fws#vless-node"
 	trojanNode := "trojan://secret@trojan.example.com:443?sni=trojan.example.com#trojan-node"
 	hy2Line := "hysteria2://secret@hy.example.com:8443?alpn=h3&insecure=1#hy2-node"
-	nodesContent := strings.Join([]string{ssLine, ssSIP002UserInfo, ssNoName, ssNoName2, vmessLine, socksLine, socksEncodedName, sock5Line, httpLine, httpsLine, upperCaseScheme, vlessNode, trojanNode, hy2Line}, "\n") + "\n"
+	anyTLSLine := "anytls://secret@any.example.com:443?sni=any.example.com&alpn=h2,http%2F1.1&fp=chrome&allowInsecure=1&idle-session-check-interval=30&idle-session-timeout=30&min-idle-session=1#anytls-node"
+	nodesContent := strings.Join([]string{ssLine, ssSIP002UserInfo, ssNoName, ssNoName2, vmessLine, socksLine, socksEncodedName, sock5Line, httpLine, httpsLine, upperCaseScheme, vlessNode, trojanNode, hy2Line, anyTLSLine}, "\n") + "\n"
 
 	dir := t.TempDir()
 	nodesPath := filepath.Join(dir, "nodes.txt")
@@ -194,6 +195,16 @@ func TestLoadSubscriptionsFromNodesFile(t *testing.T) {
 	if !strings.Contains(string(res[0].Data), "type: hysteria2") {
 		t.Fatalf("converted subscription missing hysteria2 node")
 	}
+	if !strings.Contains(string(res[0].Data), "type: anytls") {
+		t.Fatalf("converted subscription missing anytls node")
+	}
+	if !strings.Contains(string(res[0].Data), "name: anytls-node") ||
+		!strings.Contains(string(res[0].Data), "client-fingerprint: chrome") ||
+		!strings.Contains(string(res[0].Data), "sni: any.example.com") ||
+		!strings.Contains(string(res[0].Data), "skip-cert-verify: true") ||
+		!strings.Contains(string(res[0].Data), "idle-session-timeout: 30") {
+		t.Fatalf("converted subscription missing anytls options:\n%s", string(res[0].Data))
+	}
 	if !strings.Contains(string(res[0].Data), "proxy-groups:") {
 		t.Fatalf("converted subscription missing proxy-groups")
 	}
@@ -247,6 +258,20 @@ func TestLoadSubscriptionsFromNodesFileMissingRequiredFields(t *testing.T) {
 		t.Fatalf("expected nodes parse error")
 	}
 	if !strings.Contains(res[0].Err.Error(), "vmess server is required") {
+		t.Fatalf("unexpected nodes error: %v", res[0].Err)
+	}
+
+	if err := os.WriteFile(nodesPath, []byte("anytls://@any.example.com:443#bad\n"), 0o644); err != nil {
+		t.Fatalf("rewrite nodes file: %v", err)
+	}
+	res = f.LoadSubscriptions(context.Background(), p, filepath.Join(dir, "profile.yaml"))
+	if len(res) != 1 {
+		t.Fatalf("unexpected result size: %d", len(res))
+	}
+	if res[0].Err == nil {
+		t.Fatalf("expected nodes parse error")
+	}
+	if !strings.Contains(res[0].Err.Error(), "anytls password is required") {
 		t.Fatalf("unexpected nodes error: %v", res[0].Err)
 	}
 }

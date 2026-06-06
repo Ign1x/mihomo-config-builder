@@ -2,7 +2,7 @@
 
 buildGoModule {
   pname = "mihomo-config-builder";
-  version = "0.2.4";
+  version = "0.2.5";
   inherit src;
 
   subPackages = [ "cmd/mcb" ];
