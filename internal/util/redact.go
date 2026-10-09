@@ -12,6 +12,11 @@ func RedactURL(raw string) string {
 		q.Set(k, "REDACTED")
 	}
 	u.RawQuery = q.Encode()
+	if u.Path != "" && u.Path != "/" {
+		u.Path = "/REDACTED"
+		u.RawPath = ""
+	}
+	u.Fragment = ""
 	if u.User != nil {
 		u.User = url.User("REDACTED")
 	}

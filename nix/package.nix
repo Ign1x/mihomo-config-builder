@@ -2,13 +2,18 @@
 
 buildGoModule {
   pname = "mihomo-config-builder";
-  version = "0.2.5";
+  version = "0.3.0";
   inherit src;
 
   subPackages = [ "cmd/mcb" ];
   ldflags = [ "-s" "-w" ];
 
-  vendorHash = "sha256-nRVeWwh5xVkXeg5um5AcIjzH9kTNZW8NL3JBTm0OjmM=";
+  # Dependencies are reviewed and shipped in vendor/. No module download
+  # derivation or runtime package manager is needed to build or run mcb.
+  vendorHash = null;
+  env.CGO_ENABLED = "0";
+  env.GOPROXY = "off";
+  env.GOSUMDB = "off";
 
   meta = with lib; {
     description = "Deterministic Mihomo configuration generator";

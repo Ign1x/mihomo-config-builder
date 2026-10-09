@@ -198,3 +198,28 @@ func toStringSlice(items []any) []string {
 	}
 	return out
 }
+
+func TestBuildNamingResolvesRelativeCacheAndPreservesNodes(t *testing.T) {
+	dir := t.TempDir()
+	for _, name := range []string{"a", "b"} {
+		body := "proxies:\n - {name: duplicate, type: socks5, server: " + name + ".example.com, port: 1080}\nproxy-groups:\n - {name: PROXY, type: select, proxies: [duplicate]}\nrules: [MATCH,PROXY]\n"
+		if err := os.WriteFile(filepath.Join(dir, name+".yaml"), []byte(body), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	os.WriteFile(filepath.Join(dir, "metadata.json"), []byte(`{"hosts":{"a.example.com":{"countryCode":"HK"},"b.example.com":{"countryCode":"JP","city":"Tokyo"}}}`), 0600)
+	p := profile.DefaultProfile()
+	p.Subscriptions = []profile.SourceRef{{File: "a.yaml"}, {File: "b.yaml"}}
+	p.Naming = profile.NamingOptions{Enable: true, MetadataFile: "metadata.json"}
+	res, err := Run(context.Background(), p, filepath.Join(dir, "profile.yaml"), logging.New(os.Stdout, os.Stderr))
+	if err != nil {
+		t.Fatal(err)
+	}
+	proxies := res.Config["proxies"].([]any)
+	if len(proxies) != 2 {
+		t.Fatal("duplicate source labels lost a node")
+	}
+	if !strings.HasPrefix(proxies[0].(map[string]any)["name"].(string), "🇭🇰 香港") || !strings.HasPrefix(proxies[1].(map[string]any)["name"].(string), "🇯🇵 日本") {
+		t.Fatal("relative metadata path not resolved")
+	}
+}

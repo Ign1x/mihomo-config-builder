@@ -19,3 +19,8 @@ config.yaml
 
 # Node (if used for docs tooling)
 node_modules/
+
+# Private local profiles and node fixtures
+/profiles/
+/tmp-nodes-profile.yaml
+/metadata*.json

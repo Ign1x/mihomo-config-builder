@@ -34,6 +34,13 @@ type Fetcher struct {
 	httpClient     *http.Client
 	retries        int
 	defaultHeaders http.Header
+	cacheDir       string
+	offline        bool
+	warn           func(string)
+}
+
+func (f *Fetcher) SetCache(directory string, offline bool, warn func(string)) {
+	f.cacheDir, f.offline, f.warn = directory, offline, warn
 }
 
 const defaultRemoteUserAgent = "Clash-verge/v2.0.0"
@@ -58,7 +65,7 @@ func NewWithOptions(timeout time.Duration, retries int, userAgent string, proxyU
 	if strings.TrimSpace(proxyURL) != "" {
 		proxy, err := url.Parse(proxyURL)
 		if err != nil {
-			return nil, fmt.Errorf("parse proxy url: %w", err)
+			return nil, errors.New("invalid fetch proxy URL")
 		}
 		transport.Proxy = http.ProxyURL(proxy)
 	}
@@ -81,7 +88,7 @@ func (f *Fetcher) LoadTemplate(ctx context.Context, template string, profilePath
 		return nil, nil
 	}
 	if isHTTP(template) {
-		b, err := f.loadURL(ctx, template)
+		b, err := f.loadURLValidated(ctx, template, func(data []byte) error { _, err := configfile.DecodeYAMLBytes(data); return err })
 		if err != nil {
 			return nil, fmt.Errorf("load template from url %s: %w", util.RedactURL(template), err)
 		}
@@ -144,7 +151,7 @@ func (f *Fetcher) loadOne(ctx context.Context, ref profile.SourceRef, profilePat
 	}
 	if ref.URL != "" {
 		fetchURL, sourceLabel := splitSubscriptionURLMetadata(ref.URL)
-		b, err := f.loadURL(ctx, fetchURL)
+		b, err := f.loadURLValidated(ctx, fetchURL, func(data []byte) error { _, err := normalizeSubscriptionPayload(data, sourceLabel); return err })
 		if err != nil {
 			return nil, fmt.Errorf("fetch subscription url %s: %w", util.RedactURL(fetchURL), err)
 		}
@@ -166,6 +173,10 @@ func (f *Fetcher) loadOne(ctx context.Context, ref profile.SourceRef, profilePat
 }
 
 func (f *Fetcher) loadURL(ctx context.Context, rawURL string) ([]byte, error) {
+	return f.loadURLValidated(ctx, rawURL, nil)
+}
+
+func (f *Fetcher) loadURLRemote(ctx context.Context, rawURL string) ([]byte, error) {
 	var lastErr error
 	for attempt := 0; attempt <= f.retries; attempt++ {
 		data, statusCode, err := f.loadURLWithHeaders(ctx, rawURL, f.defaultHeaders)
@@ -205,7 +216,7 @@ func (f *Fetcher) loadURL(ctx context.Context, rawURL string) ([]byte, error) {
 func (f *Fetcher) loadURLWithHeaders(ctx context.Context, rawURL string, headers http.Header) ([]byte, int, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
 	if err != nil {
-		return nil, 0, fmt.Errorf("new request: %w", err)
+		return nil, 0, errors.New("invalid remote source URL")
 	}
 	if headers != nil {
 		req.Header = headers.Clone()
@@ -216,10 +227,13 @@ func (f *Fetcher) loadURLWithHeaders(ctx context.Context, rawURL string, headers
 		if ctx.Err() != nil {
 			return nil, 0, ctx.Err()
 		}
+		if networkErr, ok := err.(*url.Error); ok {
+			return nil, 0, fmt.Errorf("HTTP request failed: %w", networkErr.Err)
+		}
 		return nil, 0, err
 	}
 
-	data, readErr := io.ReadAll(resp.Body)
+	data, readErr := io.ReadAll(io.LimitReader(resp.Body, 32*1024*1024+1))
 	closeErr := resp.Body.Close()
 	if readErr != nil {
 		return nil, resp.StatusCode, readErr
@@ -229,6 +243,9 @@ func (f *Fetcher) loadURLWithHeaders(ctx context.Context, rawURL string, headers
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return nil, resp.StatusCode, fmt.Errorf("http status %d", resp.StatusCode)
+	}
+	if len(data) > 32*1024*1024 {
+		return nil, resp.StatusCode, errors.New("source response exceeds 32 MiB")
 	}
 	if len(data) == 0 {
 		return nil, resp.StatusCode, errors.New("empty response body")
@@ -327,10 +344,8 @@ func (f *Fetcher) parseNodesFileLine(ctx context.Context, line string) ([]map[st
 			appendProxyNameSuffix(proxies, subSpec.NameSuffix)
 			return proxies, nil
 		}
-		proxy, parseErr := parseNodeLine(line)
-		if parseErr == nil {
-			return []map[string]any{proxy}, nil
-		}
+		// A failed subscription is not an HTTP proxy node. Preserve the saved
+		// response (handled by the fetcher) or fail the refresh explicitly.
 		return nil, err
 	}
 
@@ -398,7 +413,7 @@ func looksLikeSubscriptionURL(u *url.URL) bool {
 }
 
 func (f *Fetcher) loadSubscriptionURLProxies(ctx context.Context, rawURL string) ([]map[string]any, error) {
-	body, err := f.loadURL(ctx, rawURL)
+	body, err := f.loadURLValidated(ctx, rawURL, func(data []byte) error { _, err := parseSubscriptionPayloadProxies(data); return err })
 	if err != nil {
 		return nil, fmt.Errorf("fetch subscription url %s: %w", util.RedactURL(rawURL), err)
 	}
@@ -416,6 +431,9 @@ func normalizeSubscriptionPayload(data []byte, sourceLabel string) ([]byte, erro
 	}
 
 	if cfg, err := configfile.DecodeYAMLBytes([]byte(trimmed)); err == nil {
+		if err := checkSubscriptionConfig(cfg); err != nil {
+			return nil, err
+		}
 		if err := normalizeSubscriptionConfigProxyNames(cfg, sourceLabel); err != nil {
 			return nil, err
 		}
@@ -659,6 +677,9 @@ func extractYAMLProxies(data []byte) ([]map[string]any, error) {
 		m, ok := rawProxy.(map[string]any)
 		if !ok {
 			return nil, fmt.Errorf("proxies[%d] must be mapping", i)
+		}
+		if err := checkProxy(m); err != nil {
+			return nil, fmt.Errorf("proxies[%d]: %w", i, err)
 		}
 		proxies = append(proxies, m)
 	}
@@ -1434,4 +1455,39 @@ func splitCipherPassword(value string) (cipher string, password string, ok bool)
 		return "", "", false
 	}
 	return raw[:sep], raw[sep+1:], true
+}
+
+func checkProxy(p map[string]any) error {
+	name, _ := p["name"].(string)
+	kind, _ := p["type"].(string)
+	if name == "" || kind == "" {
+		return errors.New("proxy requires name and type")
+	}
+	if kind != "direct" && kind != "reject" && kind != "dns" {
+		server, _ := p["server"].(string)
+		if server == "" || p["port"] == nil {
+			return errors.New("network proxy requires server and port")
+		}
+	}
+	return nil
+}
+
+func checkSubscriptionConfig(cfg map[string]any) error {
+	if providers, ok := cfg["proxy-providers"].(map[string]any); ok && len(providers) > 0 {
+		return nil
+	}
+	proxies, ok := cfg["proxies"].([]any)
+	if !ok {
+		return errors.New("subscription response has no proxy sequence")
+	}
+	for i, raw := range proxies {
+		p, ok := raw.(map[string]any)
+		if !ok {
+			return fmt.Errorf("proxies[%d] must be mapping", i)
+		}
+		if err := checkProxy(p); err != nil {
+			return fmt.Errorf("proxies[%d]: %w", i, err)
+		}
+	}
+	return nil
 }

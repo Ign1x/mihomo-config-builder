@@ -3,13 +3,13 @@ BINARY=bin/mcb
 .PHONY: build test lint ci fmt
 
 build:
-	go build -o $(BINARY) ./cmd/mcb
+	GOPROXY=off GOSUMDB=off CGO_ENABLED=0 go build -mod=vendor -o $(BINARY) ./cmd/mcb
 
 test:
-	go test ./...
+	GOPROXY=off GOSUMDB=off go test -mod=vendor ./...
 
 lint:
-	go vet ./...
+	GOPROXY=off GOSUMDB=off go vet -mod=vendor ./...
 
 fmt:
 	gofmt -w ./cmd ./internal

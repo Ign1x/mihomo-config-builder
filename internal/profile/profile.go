@@ -19,6 +19,13 @@ type Profile struct {
 	Policy        PolicyDirectives `yaml:"policy,omitempty" json:"policy,omitempty"`
 	Hooks         HookConfig       `yaml:"hooks,omitempty" json:"hooks,omitempty"`
 	RuleTemplates []string         `yaml:"ruleTemplates,omitempty" json:"ruleTemplates,omitempty"`
+	Naming        NamingOptions    `yaml:"naming,omitempty" json:"naming,omitempty"`
+}
+
+type NamingOptions struct {
+	Enable         bool   `yaml:"enable" json:"enable"`
+	MetadataFile   string `yaml:"metadataFile,omitempty" json:"metadataFile,omitempty"`
+	IncludeNetwork bool   `yaml:"includeNetwork" json:"includeNetwork"`
 }
 
 type SourceRef struct {
@@ -56,6 +63,8 @@ type FetchOptions struct {
 	IgnoreFailed   bool   `yaml:"ignoreFailed" json:"ignoreFailed"`
 	UserAgent      string `yaml:"userAgent,omitempty" json:"userAgent,omitempty"`
 	ProxyURL       string `yaml:"proxyURL,omitempty" json:"proxyURL,omitempty"`
+	CacheDir       string `yaml:"cacheDir,omitempty" json:"cacheDir,omitempty"`
+	Offline        bool   `yaml:"offline" json:"offline"`
 }
 
 type PolicyDirectives struct {
@@ -146,8 +155,8 @@ func (p Profile) Validate() error {
 		return errors.New("fetch.concurrency must be > 0")
 	}
 	if p.Fetch.ProxyURL != "" {
-		if _, err := url.Parse(p.Fetch.ProxyURL); err != nil {
-			return fmt.Errorf("fetch.proxyURL is invalid: %w", err)
+		if u, err := url.Parse(p.Fetch.ProxyURL); err != nil || u.Host == "" || (u.Scheme != "http" && u.Scheme != "https" && u.Scheme != "socks5") {
+			return errors.New("fetch.proxyURL is invalid")
 		}
 	}
 	if p.Hooks.JS.TimeoutMs < 0 {

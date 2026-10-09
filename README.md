@@ -22,7 +22,7 @@ Goals:
 ### 1) Build
 
 ```bash
-go build -o bin/mcb ./cmd/mcb
+GOPROXY=off GOSUMDB=off CGO_ENABLED=0 go build -mod=vendor -o bin/mcb ./cmd/mcb
 ```
 
 ### 2) Generate config from example
@@ -226,5 +226,57 @@ See `docs/research.md` for upstream references and license-risk mitigation.
 
 ## Release Notes
 
-- Current release notes draft: `docs/releases/v0.2.4.md`
+- Current release notes: `docs/releases/v0.3.0.md`
 - Release checklist: `docs/releases/checklist.md`
+
+## Offline reliability and node presentation (0.3.0)
+
+Public Go dependencies and their licenses are included in `vendor/`. Builds use
+`GOPROXY=off GOSUMDB=off -mod=vendor`; the executable has no Go/Node runtime or
+package downloads. Nix still needs the compiler and other build tools on a new
+machine. Update vendored modules deliberately with `go mod tidy && go mod vendor`.
+
+```yaml
+fetch:
+  cacheDir: ./private-source-cache
+  offline: false
+naming:
+  enable: true
+  metadataFile: ./metadata.json
+  includeNetwork: false
+```
+
+Paths above are relative to the profile. Successful remote responses are parsed
+before they atomically replace the private cache (directory 0700, files 0600).
+HTTP failures and invalid responses use the last accepted response. `--offline`
+never fetches a remote source; a cache miss is an error. Cached subscriptions
+contain credentials: keep the cache out of Git and the Nix store. Caches have no
+expiry to support recovery; an offline build can contain outdated nodes. Remove
+the relevant cache when revoking a subscription. Config output is atomic and 0600.
+The caller may grant a dedicated daemon group read access afterwards.
+
+Names use flag, country and city, with a stable short identity suffix when needed.
+Protocol and guessed route labels are omitted. Both manual links and subscription
+nodes pass through the same naming step. Different nodes with the same original
+label survive merging. Group, rule, dialer and DNS references follow renames;
+overrides that target an original node name must account for naming before merging.
+JS hooks receive the normalized names and must preserve references if changing them.
+
+Builds read only local metadata. Enrichment is an explicit background operation:
+
+```bash
+mcb metadata refresh -f config.yaml --cache metadata.json --proxy-url http://127.0.0.1:7892
+mcb build -c profile.yaml -o config.yaml --offline --metadata-output node-metadata.json
+```
+
+The default lookup is ipwho.is, with seven-day freshness and bounded concurrency
+and timeouts. Private IPs are skipped; failed lookups retain previous metadata.
+Missing metadata gives a `🌐 未定位` name without blocking builds. The location and
+network identify the **server IP**, which can be a relay entry rather than the
+proxy exit. ASN does not establish CN2, 9929 or other route characteristics.
+
+`node-metadata.json` maps final node names to display metadata only (country,
+city, server IP, ASN, organization, network). It contains no passwords or URLs.
+A dashboard can read this optional sidecar and render `network` as a separate
+badge beside the protocol, keeping node names compact. `mcb metadata export`
+exports a sidecar for an existing config without fetching or renaming anything.
