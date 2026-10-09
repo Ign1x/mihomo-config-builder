@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"net"
 	"os"
 	"regexp"
@@ -149,7 +150,10 @@ func Network(e Entry) string {
 var cities = map[string]string{
 	"hong kong": "香港", "singapore": "新加坡", "tokyo": "东京", "osaka": "大阪", "seoul": "首尔",
 	"taipei": "台北", "los angeles": "洛杉矶", "san jose": "圣何塞", "seattle": "西雅图",
-	"new york": "纽约", "chicago": "芝加哥", "dallas": "达拉斯", "london": "伦敦", "frankfurt am main": "法兰克福",
+	"new york": "纽约", "chicago": "芝加哥", "dallas": "达拉斯", "london": "伦敦",
+	"mumbai": "孟买", "moscow": "莫斯科", "san francisco": "旧金山", "hanoi": "河内",
+	"bochum": "波鸿", "gelnhausen": "盖尔恩豪森", "kerkrade": "凯尔克拉德",
+	"frankfurt": "法兰克福", "frankfurt am main": "法兰克福",
 	"amsterdam": "阿姆斯特丹", "paris": "巴黎", "sydney": "悉尼", "toronto": "多伦多", "shanghai": "上海", "beijing": "北京",
 }
 
@@ -182,57 +186,66 @@ func Display(e Entry, host string, includeNetwork bool) string {
 
 func Apply(cfg map[string]any, options profile.NamingOptions, cache Cache) {
 	proxies, _ := cfg["proxies"].([]any)
-	counts := map[string]int{}
-	identities := map[string][]string{}
-	for _, raw := range proxies {
-		p, _ := raw.(map[string]any)
-		host, _ := p["server"].(string)
-		base := Display(cache.Hosts[host], host, options.IncludeNetwork)
-		counts[base]++
-		identities[base] = append(identities[base], Key(p))
+	type candidate struct {
+		proxy          map[string]any
+		old, base, key string
 	}
-	reserved := map[string]bool{"DIRECT": true, "REJECT": true, "PASS": true, "GLOBAL": true}
+	candidates := make([]candidate, 0, len(proxies))
+	counts := map[string]int{}
+	for _, raw := range proxies {
+		p, ok := raw.(map[string]any)
+		if !ok {
+			continue
+		}
+		host, _ := p["server"].(string)
+		old, _ := p["name"].(string)
+		base := Display(cache.Hosts[host], host, options.IncludeNetwork)
+		candidates = append(candidates, candidate{p, old, base, Key(p)})
+		counts[base]++
+	}
+	// A deterministic internal identity orders peers; users see ordinary numeric
+	// labels instead of hexadecimal hashes. Source reordering keeps the labels.
+	sort.SliceStable(candidates, func(i, j int) bool {
+		if candidates[i].base != candidates[j].base {
+			return candidates[i].base < candidates[j].base
+		}
+		return candidates[i].key < candidates[j].key
+	})
+	reserved := map[string]bool{"DIRECT": true, "REJECT": true, "PASS": true, "GLOBAL": true, "REJECT-DROP": true, "COMPATIBLE": true}
 	groups, _ := cfg["proxy-groups"].([]any)
 	for _, raw := range groups {
 		g, _ := raw.(map[string]any)
 		name, _ := g["name"].(string)
 		reserved[name] = true
 	}
-	renames := map[string]string{}
-	for _, raw := range proxies {
-		p, ok := raw.(map[string]any)
-		if !ok {
-			continue
+	blocked := make(map[string]bool, len(reserved))
+	for name := range reserved {
+		blocked[name] = true
+	}
+	// Keep unnumbered single-node names available even when a numbered label
+	// from another location happens to have exactly that spelling.
+	for base, count := range counts {
+		if count == 1 && !reserved[base] {
+			reserved[base] = true
 		}
-		old, _ := p["name"].(string)
-		host, _ := p["server"].(string)
-		base := Display(cache.Hosts[host], host, options.IncludeNetwork)
-		name := base
-		key := Key(p)
-		if counts[base] > 1 || reserved[name] {
-			length := 4
+	}
+	indexes := map[string]int{}
+	renames := map[string]string{}
+	for _, c := range candidates {
+		name := c.base
+
+		if counts[c.base] > 1 || blocked[c.base] {
 			for {
-				name = base + " · " + key[:length]
-				unique := !reserved[name]
-				for _, other := range identities[base] {
-					if other != key && other[:length] == key[:length] {
-						unique = false
-						break
-					}
-				}
-				if unique {
-					break
-				}
-				length++
-				if length > len(key) {
-					name += "x"
+				indexes[c.base]++
+				name = fmt.Sprintf("%s %02d", c.base, indexes[c.base])
+				if !reserved[name] {
 					break
 				}
 			}
 		}
 		reserved[name] = true
-		p["name"] = name
-		renames[old] = name
+		c.proxy["name"] = name
+		renames[c.old] = name
 	}
 	RewriteReferences(cfg, renames)
 }

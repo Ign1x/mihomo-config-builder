@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"regexp"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -35,6 +36,9 @@ func TestNamingRetainsDuplicateLabelsAndRewritesReferences(t *testing.T) {
 	}
 	an := proxies[0].(map[string]any)["name"].(string)
 	bn := proxies[1].(map[string]any)["name"].(string)
+	if !regexp.MustCompile(`^🇭🇰 香港 0[12]$`).MatchString(an) || !regexp.MustCompile(`^🇭🇰 香港 0[12]$`).MatchString(bn) {
+		t.Fatalf("unreadable node labels: %q %q", an, bn)
+	}
 	if an == bn || !strings.HasPrefix(an, "🇭🇰 香港") || strings.Contains(an, "anytls") || strings.Contains(an, "Test Network") {
 		t.Fatalf("bad name: %q", an)
 	}
@@ -93,5 +97,22 @@ func TestRefreshPrivateAndFailureKeepPreviousMetadata(t *testing.T) {
 	_, stats, err = Refresh(context.Background(), []string{"1.1.1.1"}, cache, RefreshOptions{Endpoint: ts.URL + "/{ip}"})
 	if err != nil || stats.Cached != 1 || requests.Load() != before {
 		t.Fatal("fresh cache still queried API")
+	}
+}
+
+func TestKnownCitiesHaveReadableChineseNames(t *testing.T) {
+	for city, translated := range map[string]string{"Mumbai": "孟买", "Moscow": "莫斯科", "San Francisco": "旧金山", "Hanoi": "河内", "Gelnhausen": "盖尔恩豪森", "Kerkrade": "凯尔克拉德", "Bochum": "波鸿"} {
+		got := Display(Entry{CountryCode: "US", City: city}, "1.1.1.1", false)
+		if !strings.Contains(got, translated) || strings.Contains(got, city) {
+			t.Fatalf("%s: %s", city, got)
+		}
+	}
+}
+
+func TestNumberedNamesAvoidGroupCollisions(t *testing.T) {
+	cfg := map[string]any{"proxies": []any{node("old", "1.1.1.1")}, "proxy-groups": []any{map[string]any{"name": "🌐 未定位"}, map[string]any{"name": "🌐 未定位 01"}}}
+	Apply(cfg, profile.NamingOptions{}, Cache{})
+	if got := cfg["proxies"].([]any)[0].(map[string]any)["name"]; got != "🌐 未定位 02" {
+		t.Fatalf("group collision: %s", got)
 	}
 }

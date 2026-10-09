@@ -31,7 +31,7 @@ func Run(args []string, stdout io.Writer, stderr io.Writer) error {
 	case "metadata":
 		return runMetadata(args[1:], stdout, stderr)
 	case "version":
-		fmt.Fprintln(stdout, "mcb 0.3.0")
+		fmt.Fprintln(stdout, "mcb 0.3.1")
 		return nil
 	case "validate":
 		return runValidate(args[1:], stdout, stderr)

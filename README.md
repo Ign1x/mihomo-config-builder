@@ -226,7 +226,7 @@ See `docs/research.md` for upstream references and license-risk mitigation.
 
 ## Release Notes
 
-- Current release notes: `docs/releases/v0.3.0.md`
+- Current release notes: `docs/releases/v0.3.1.md`
 - Release checklist: `docs/releases/checklist.md`
 
 ## Offline reliability and node presentation (0.3.0)
@@ -255,8 +255,10 @@ expiry to support recovery; an offline build can contain outdated nodes. Remove
 the relevant cache when revoking a subscription. Config output is atomic and 0600.
 The caller may grant a dedicated daemon group read access afterwards.
 
-Names use flag, country and city, with a stable short identity suffix when needed.
-Protocol and guessed route labels are omitted. Both manual links and subscription
+Names use flag, country and city, with a two-digit number when needed.
+Peers are ordered by their internal identity, so source reordering preserves numbers.
+Adding or removing peers can renumber a location; integrations should restore
+selections by endpoint identity. Protocol and guessed route labels are omitted. Both manual links and subscription
 nodes pass through the same naming step. Different nodes with the same original
 label survive merging. Group, rule, dialer and DNS references follow renames;
 overrides that target an original node name must account for naming before merging.
