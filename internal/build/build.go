@@ -23,7 +23,7 @@ import (
 type Result struct {
 	Config   map[string]any
 	Warnings []validate.Warning
-	Metadata map[string]naming.Entry
+	Metadata map[string]naming.Metadata
 }
 
 func Run(ctx context.Context, p profile.Profile, profilePath string, logger *logging.Logger) (Result, error) {

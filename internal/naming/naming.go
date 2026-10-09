@@ -34,6 +34,29 @@ type Cache struct {
 	Hosts   map[string]Entry `json:"hosts"`
 }
 
+// Metadata combines server-IP facts with labels belonging to one endpoint.
+// Source labels must not be cached by IP: different nodes may share a server.
+type Metadata struct {
+	Entry
+	Optimized bool `json:"optimized,omitempty"`
+}
+
+const optimizedKey = "x-mcb-optimized"
+
+// Retain only the recognized label, never the raw provider name. A top-level
+// extension survives YAML round trips without changing proxy identity or names.
+func captureOptimized(cfg, proxy map[string]any, name string) {
+	if !strings.Contains(name, "优化") {
+		return
+	}
+	labels, ok := cfg[optimizedKey].(map[string]any)
+	if !ok {
+		labels = map[string]any{}
+		cfg[optimizedKey] = labels
+	}
+	labels[Key(proxy)] = true
+}
+
 func ReadCache(path string) (Cache, error) {
 	c := Cache{Version: 1, Hosts: map[string]Entry{}}
 	if path == "" {
@@ -108,6 +131,7 @@ func Identify(cfg map[string]any) {
 			continue
 		}
 		old, _ := p["name"].(string)
+		captureOptimized(cfg, p, old)
 		name := "mcb:" + Key(p)
 		p["name"] = name
 		if _, exists := renames[old]; !exists {
@@ -199,6 +223,7 @@ func Apply(cfg map[string]any, options profile.NamingOptions, cache Cache) {
 		}
 		host, _ := p["server"].(string)
 		old, _ := p["name"].(string)
+		captureOptimized(cfg, p, old)
 		base := Display(cache.Hosts[host], host, options.IncludeNetwork)
 		candidates = append(candidates, candidate{p, old, base, Key(p)})
 		counts[base]++
@@ -341,16 +366,19 @@ func RewriteReferences(cfg map[string]any, names map[string]string) {
 }
 
 // Export contains presentation only, never passwords, UUIDs or subscription URLs.
-func Export(cfg map[string]any, cache Cache) map[string]Entry {
-	out := map[string]Entry{}
+func Export(cfg map[string]any, cache Cache) map[string]Metadata {
+	out := map[string]Metadata{}
+	labels, _ := cfg[optimizedKey].(map[string]any)
 	proxies, _ := cfg["proxies"].([]any)
 	for _, raw := range proxies {
 		p, _ := raw.(map[string]any)
 		host, _ := p["server"].(string)
 		name, _ := p["name"].(string)
-		if e, ok := cache.Hosts[host]; ok {
+		optimized, _ := labels[Key(p)].(bool)
+		optimized = optimized || strings.Contains(name, "优化")
+		if e, ok := cache.Hosts[host]; ok || optimized {
 			e.Network = Network(e)
-			out[name] = e
+			out[name] = Metadata{Entry: e, Optimized: optimized}
 		}
 	}
 	return out

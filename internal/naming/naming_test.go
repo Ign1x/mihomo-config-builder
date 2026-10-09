@@ -11,12 +11,63 @@ import (
 	"testing"
 	"time"
 
+	"gopkg.in/yaml.v3"
+
 	"github.com/ign1x/mihomo-config-builder/internal/merge"
 	"github.com/ign1x/mihomo-config-builder/internal/profile"
 )
 
 func node(name, server string) map[string]any {
 	return map[string]any{"name": name, "type": "anytls", "server": server, "port": 443, "password": "private-credential"}
+}
+
+func TestOptimizationLabelSurvivesMergeRenameAndYAMLRoundTrip(t *testing.T) {
+	plain := node("ordinary", "1.1.1.1")
+	optimized := node("香港 优化 private-source-label", "1.1.1.1")
+	sameIP := node("ordinary peer", "1.1.1.1")
+	sameIP["port"] = 8443
+	before := Key(plain)
+	cfg := map[string]any{"proxies": []any{plain, sameIP}}
+	other := map[string]any{"proxies": []any{optimized}}
+	Identify(cfg)
+	Identify(other)
+	if err := merge.SubscriptionInto(cfg, other); err != nil {
+		t.Fatal(err)
+	}
+	Apply(cfg, profile.NamingOptions{}, Cache{})
+	proxies := cfg["proxies"].([]any)
+	if len(proxies) != 2 || Key(proxies[0].(map[string]any)) != before {
+		t.Fatal("presentation label changed endpoint identity or deduplication")
+	}
+	data, err := yaml.Marshal(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var restored map[string]any
+	if err := yaml.Unmarshal(data, &restored); err != nil {
+		t.Fatal(err)
+	}
+	// Standalone metadata export must work after renaming, without any IP cache.
+	metadata := Export(restored, Cache{})
+	name := proxies[0].(map[string]any)["name"].(string)
+	if len(metadata) != 1 || !metadata[name].Optimized {
+		t.Fatalf("lost label or marked a peer merely sharing its IP: %+v", metadata)
+	}
+	if strings.Contains(string(data), "private-source-label") || strings.Contains(name, "优化") {
+		t.Fatal("raw source label leaked into normalized configuration")
+	}
+	public, _ := json.Marshal(metadata)
+	if strings.Contains(string(public), "private-credential") || strings.Contains(string(public), before) {
+		t.Fatal("private data leaked into dashboard metadata")
+	}
+}
+
+func TestOptimizationLabelDoesNotRequireNaming(t *testing.T) {
+	cfg := map[string]any{"proxies": []any{node("英国 优化", "1.1.1.1"), node("英国 普通", "8.8.8.8")}}
+	metadata := Export(cfg, Cache{})
+	if len(metadata) != 1 || !metadata["英国 优化"].Optimized {
+		t.Fatal("original source label not recognized")
+	}
 }
 func TestNamingRetainsDuplicateLabelsAndRewritesReferences(t *testing.T) {
 	a := node("same", "1.1.1.1")

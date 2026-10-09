@@ -223,3 +223,23 @@ func TestBuildNamingResolvesRelativeCacheAndPreservesNodes(t *testing.T) {
 		t.Fatal("relative metadata path not resolved")
 	}
 }
+
+func TestBuildCapturesOptimizationFromNodeURI(t *testing.T) {
+	dir := t.TempDir()
+	p := profile.DefaultProfile()
+	if err := os.WriteFile(filepath.Join(dir, "nodes.txt"), []byte("socks5://user:secret@1.1.1.1:1080#%E9%A6%99%E6%B8%AF%20%E4%BC%98%E5%8C%96\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	p.Subscriptions = []profile.SourceRef{{NodesFile: "nodes.txt"}}
+	p.Naming = profile.NamingOptions{Enable: true}
+	res, err := Run(context.Background(), p, filepath.Join(dir, "profile.yaml"), logging.New(os.Stdout, os.Stderr))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, raw := range res.Config["proxies"].([]any) {
+		name := raw.(map[string]any)["name"].(string)
+		if strings.Contains(name, "优化") || !res.Metadata[name].Optimized {
+			t.Fatal("URI optimization label lost during normalized build")
+		}
+	}
+}

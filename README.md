@@ -226,7 +226,7 @@ See `docs/research.md` for upstream references and license-risk mitigation.
 
 ## Release Notes
 
-- Current release notes: `docs/releases/v0.3.1.md`
+- Current release notes: `docs/releases/v0.3.2.md`
 - Release checklist: `docs/releases/checklist.md`
 
 ## Offline reliability and node presentation (0.3.0)
@@ -280,5 +280,9 @@ proxy exit. ASN does not establish CN2, 9929 or other route characteristics.
 `node-metadata.json` maps final node names to display metadata only (country,
 city, server IP, ASN, organization, network). It contains no passwords or URLs.
 A dashboard can read this optional sidecar and render `network` as a separate
-badge beside the protocol, keeping node names compact. `mcb metadata export`
+badge beside the protocol, keeping node names compact. Original names containing
+`优化` also export `optimized: true` for a separate optimization badge, even when
+IP metadata is unavailable. This is a source-provided label, not a measured route
+quality claim. A private `x-mcb-optimized` configuration extension preserves it
+across renaming and later exports without changing endpoint identity. `mcb metadata export`
 exports a sidecar for an existing config without fetching or renaming anything.
